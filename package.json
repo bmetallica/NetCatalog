@@ -1,0 +1,21 @@
+{
+  "name": "netcatalog",
+  "version": "1.0.0",
+  "description": "Network Catalog - Automatic network device and service discovery",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "db:init": "node src/db/init.js",
+    "build:frontend": "cd frontend && npm run build",
+    "install:all": "npm install && cd frontend && npm install"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "pg": "^8.12.0",
+    "node-cron": "^3.0.3",
+    "cors": "^2.8.5",
+    "xml2js": "^0.6.2",
+    "dotenv": "^16.4.5"
+  }
+}
