@@ -108,7 +108,7 @@ function Availability() {
   return (
     <div className="page">
       <div className="page-header">
-        <h2>Verfuegbarkeit</h2>
+        <h2>Verfügbarkeit</h2>
         <div className="availability-nav">
           <button className="btn btn-sm" onClick={() => changeDate(-1)}
             disabled={date <= minDate}>
@@ -138,7 +138,7 @@ function Availability() {
       ) : data.length === 0 ? (
         <div className="empty-state">
           <Calendar size={48} />
-          <p>Keine Verfuegbarkeitsdaten fuer diesen Tag</p>
+          <p>Keine Verfügbarkeitsdaten für diesen Tag</p>
         </div>
       ) : (
         <div className="availability-list">

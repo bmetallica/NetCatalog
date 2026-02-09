@@ -18,7 +18,7 @@ function App() {
   const navItems = [
     { path: '/', label: 'Dashboard', icon: LayoutDashboard },
     { path: '/hosts', label: 'Hosts', icon: Server },
-    { path: '/availability', label: 'Verfuegbarkeit', icon: Activity },
+    { path: '/availability', label: 'Verfügbarkeit', icon: Activity },
     { path: '/scans', label: 'Scan-Verlauf', icon: History },
     { path: '/settings', label: 'Einstellungen', icon: Settings },
   ];

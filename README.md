@@ -1,6 +1,6 @@
 # NetCatalog
 
-Automatische Netzwerk-Inventarisierung und Service-Erkennung. NetCatalog scannt dein lokales Netzwerk, erkennt Geraete und deren Dienste und stellt alles uebersichtlich in einem Web-Dashboard dar.
+Automatische Netzwerk-Inventarisierung und Service-Erkennung. NetCatalog scannt dein lokales Netzwerk, erkennt Geräte und deren Dienste und stellt alles übersichtlich in einem Web-Dashboard dar.
 
 ![Node.js](https://img.shields.io/badge/Node.js-18+-green)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-13+-blue)
@@ -8,23 +8,23 @@ Automatische Netzwerk-Inventarisierung und Service-Erkennung. NetCatalog scannt 
 
 ## Features
 
-- **Automatische Netzwerkerkennung** - Ping-Sweep + SYN-Scan findet alle aktiven Geraete
+- **Automatische Netzwerkerkennung** - Ping-Sweep + SYN-Scan findet alle aktiven Geräte
 - **Tiefe Service-Identifikation** - Erkennt 50+ Dienste durch Banner-Grabbing, HTTP-Probing und Signatur-Matching
-- **Verfuegbarkeits-Tracking** - 24h-Zeitleiste pro Host mit 30-Tage-Historie
+- **Verfügbarkeits-Tracking** - 24h-Zeitleiste pro Host mit 30-Tage-Historie
 - **Geplante Scans** - Konfigurierbare automatische Scans per Cron
-- **Responsives Dashboard** - Dark-Theme Web-UI mit Host-Uebersicht, Service-Details und Scan-Historie
+- **Responsives Dashboard** - Dark-Theme Web-UI mit Host-Übersicht, Service-Details und Scan-Historie
 - **OS-Erkennung** - Betriebssystem-Erkennung via nmap OS-Fingerprinting
 
 ## Screenshots
 
-Das Dashboard zeigt eine Uebersicht aller erkannten Hosts, deren Status, offene Ports und identifizierte Services.
+Das Dashboard zeigt eine Übersicht aller erkannten Hosts, deren Status, offene Ports und identifizierte Services.
 
 ## Voraussetzungen
 
 - **Node.js** >= 18
 - **PostgreSQL** >= 13
-- **nmap** (mit Root-Rechten fuer SYN-Scan und OS-Erkennung)
-- **curl** (fuer HTTP-Probing)
+- **nmap** (mit Root-Rechten für SYN-Scan und OS-Erkennung)
+- **curl** (für HTTP-Probing)
 - Linux (getestet auf Debian 11)
 
 ## Installation
@@ -65,7 +65,7 @@ SCAN_INTERVAL_MINUTES=30
 PORT=3000
 ```
 
-### 4. Abhaengigkeiten installieren
+### 4. Abhängigkeiten installieren
 
 ```bash
 npm run install:all
@@ -121,7 +121,7 @@ systemctl enable netcatalog
 systemctl start netcatalog
 ```
 
-> **Hinweis:** Der Service laeuft als root, da nmap Root-Rechte fuer SYN-Scans und OS-Erkennung benoetigt.
+> **Hinweis:** Der Service läuft als root, da nmap Root-Rechte für SYN-Scans und OS-Erkennung benötigt.
 
 ## Zugriff
 
@@ -141,7 +141,7 @@ NetCatalog/
 │   │   ├── services.js        # Service-Datenzugriff
 │   │   ├── scans.js           # Scan-Historie
 │   │   ├── settings.js        # Einstellungen
-│   │   └── availability.js    # Verfuegbarkeits-Daten
+│   │   └── availability.js    # Verfügbarkeits-Daten
 │   ├── routes/
 │   │   └── api.js             # REST API Endpoints
 │   └── services/
@@ -154,10 +154,10 @@ NetCatalog/
 │   │   ├── api.js             # API Client
 │   │   ├── index.css          # Styles (Dark Theme)
 │   │   └── pages/
-│   │       ├── Dashboard.jsx      # Uebersicht
+│   │       ├── Dashboard.jsx      # Übersicht
 │   │       ├── Hosts.jsx          # Host-Liste
 │   │       ├── HostDetail.jsx     # Host-Details & Services
-│   │       ├── Availability.jsx   # Verfuegbarkeits-Zeitleiste
+│   │       ├── Availability.jsx   # Verfügbarkeits-Zeitleiste
 │   │       ├── ScanHistory.jsx    # Scan-Verlauf
 │   │       └── Settings.jsx       # Einstellungen
 │   ├── package.json
@@ -174,13 +174,13 @@ NetCatalog/
 | GET | `/api/stats` | Dashboard-Statistiken |
 | GET | `/api/hosts` | Alle Hosts |
 | GET | `/api/hosts/:id` | Host-Details mit Services |
-| DELETE | `/api/hosts/:id` | Host loeschen |
+| DELETE | `/api/hosts/:id` | Host löschen |
 | GET | `/api/scans` | Scan-Historie |
 | POST | `/api/scans/start` | Manuellen Scan starten |
 | GET | `/api/scans/status` | Aktueller Scan-Status |
-| GET | `/api/availability?date=YYYY-MM-DD` | Verfuegbarkeitsdaten pro Tag |
+| GET | `/api/availability?date=YYYY-MM-DD` | Verfügbarkeitsdaten pro Tag |
 | GET | `/api/settings` | Einstellungen lesen |
-| PUT | `/api/settings` | Einstellungen aendern |
+| PUT | `/api/settings` | Einstellungen ändern |
 
 ## Lizenz
 
