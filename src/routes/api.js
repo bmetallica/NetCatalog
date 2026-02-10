@@ -7,6 +7,8 @@ const settingsModel = require('../models/settings');
 const { runScan, isScanning, getCurrentScanId } = require('../services/scanner');
 const { scheduleFromSettings } = require('../services/scheduler');
 const availabilityModel = require('../models/availability');
+const topologyModel = require('../models/topology');
+const { DEVICE_TYPES } = require('../services/classifier');
 
 // Allowed settings keys and their validators
 const SETTINGS_VALIDATORS = {
@@ -158,6 +160,54 @@ router.get('/availability', async (req, res) => {
     const data = await availabilityModel.getByDay(date);
     res.json(data);
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Topology / Infrastructure Map
+router.get('/topology', async (req, res) => {
+  try {
+    const topology = await topologyModel.getTopology();
+    res.json(topology);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Device types list
+router.get('/device-types', (req, res) => {
+  res.json(DEVICE_TYPES);
+});
+
+// Classify a host (set device type and/or parent)
+router.put('/hosts/:id/classify', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid host ID' });
+
+    const { device_type, parent_host_id } = req.body;
+
+    if (device_type !== undefined && device_type !== null) {
+      const valid = DEVICE_TYPES.map(t => t.value);
+      if (!valid.includes(device_type)) {
+        return res.status(400).json({ error: `Ungültiger Gerätetyp: ${device_type}` });
+      }
+    }
+
+    const result = await topologyModel.updateClassification(
+      id,
+      device_type,
+      parent_host_id !== undefined
+        ? (parent_host_id === null ? null : parseInt(parent_host_id))
+        : undefined
+    );
+
+    if (!result) return res.status(404).json({ error: 'Host not found' });
+    res.json(result);
+  } catch (err) {
+    if (err.message.includes('eigener Parent') || err.message.includes('nicht gefunden')) {
+      return res.status(400).json({ error: err.message });
+    }
     res.status(500).json({ error: err.message });
   }
 });

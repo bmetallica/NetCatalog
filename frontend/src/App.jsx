@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Routes, Route, NavLink, useLocation } from 'react-router-dom';
 import {
-  LayoutDashboard, Server, History, Settings, Network, Menu, X, Activity
+  LayoutDashboard, Server, History, Settings, Network, Menu, X, Activity, Map
 } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
 import Hosts from './pages/Hosts';
@@ -9,6 +9,7 @@ import HostDetail from './pages/HostDetail';
 import ScanHistory from './pages/ScanHistory';
 import SettingsPage from './pages/Settings';
 import Availability from './pages/Availability';
+import InfraMap from './pages/InfraMap';
 import NotFound from './pages/NotFound';
 
 function App() {
@@ -19,6 +20,7 @@ function App() {
     { path: '/', label: 'Dashboard', icon: LayoutDashboard },
     { path: '/hosts', label: 'Hosts', icon: Server },
     { path: '/availability', label: 'Verfügbarkeit', icon: Activity },
+    { path: '/map', label: 'Infrastruktur', icon: Map },
     { path: '/scans', label: 'Scan-Verlauf', icon: History },
     { path: '/settings', label: 'Einstellungen', icon: Settings },
   ];
@@ -61,6 +63,7 @@ function App() {
           <Route path="/hosts" element={<Hosts />} />
           <Route path="/hosts/:id" element={<HostDetail />} />
           <Route path="/availability" element={<Availability />} />
+          <Route path="/map" element={<InfraMap />} />
           <Route path="/scans" element={<ScanHistory />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="*" element={<NotFound />} />

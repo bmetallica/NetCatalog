@@ -27,4 +27,11 @@ export const api = {
       body: JSON.stringify({ settings }),
     }),
   getAvailability: (date) => fetchJson(`/availability?date=${date}`),
+  getTopology: () => fetchJson('/topology'),
+  classifyHost: (id, data) =>
+    fetchJson(`/hosts/${id}/classify`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  getDeviceTypes: () => fetchJson('/device-types'),
 };

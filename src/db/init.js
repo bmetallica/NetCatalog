@@ -86,6 +86,19 @@ CREATE TABLE IF NOT EXISTS host_availability (
 );
 CREATE INDEX IF NOT EXISTS idx_availability_host_checked ON host_availability (host_id, checked_at);
 CREATE INDEX IF NOT EXISTS idx_availability_checked ON host_availability (checked_at);
+
+DO $$ BEGIN
+  ALTER TABLE hosts ADD COLUMN device_type VARCHAR(50) DEFAULT NULL;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+DO $$ BEGIN
+  ALTER TABLE hosts ADD COLUMN parent_host_id INTEGER REFERENCES hosts(id) ON DELETE SET NULL;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_hosts_parent ON hosts(parent_host_id);
+CREATE INDEX IF NOT EXISTS idx_hosts_device_type ON hosts(device_type);
 `;
 
 async function initDatabase() {
