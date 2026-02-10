@@ -25,12 +25,12 @@ function HostDetail() {
   const openServices = (host.services || []).filter(s => s.state === 'open');
 
   const deleteHost = async () => {
-    if (!confirm(`Host ${host.hostname || host.ip} wirklich loeschen?`)) return;
+    if (!confirm(`Host ${host.hostname || host.ip} wirklich löschen?`)) return;
     try {
       await api.deleteHost(id);
       navigate('/hosts');
     } catch (err) {
-      alert(err.message || 'Loeschen fehlgeschlagen');
+      alert(err.message || 'Löschen fehlgeschlagen');
     }
   };
 
@@ -53,7 +53,7 @@ function HostDetail() {
     <>
       <div className="host-detail-header">
         <button className="back-btn" onClick={() => navigate('/hosts')}>
-          <ArrowLeft size={16} /> Zurueck
+          <ArrowLeft size={16} /> Zurück
         </button>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
           <div className={`host-avatar ${host.status}`} style={{ width: 52, height: 52 }}>
@@ -73,7 +73,7 @@ function HostDetail() {
             className="btn btn-secondary"
             style={{ marginLeft: 'auto', color: 'var(--danger)', padding: '8px 14px' }}
             onClick={deleteHost}
-            title="Host loeschen"
+            title="Host löschen"
           >
             <Trash2 size={16} />
           </button>
@@ -174,7 +174,7 @@ function HostDetail() {
                             style={{ padding: '4px 10px', fontSize: 12 }}
                             onClick={(e) => e.stopPropagation()}
                           >
-                            <ExternalLink size={14} /> Oeffnen
+                            <ExternalLink size={14} /> Öffnen
                           </a>
                         )}
                       </td>

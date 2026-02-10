@@ -45,7 +45,7 @@ function ScanHistory() {
       <div className="page-header">
         <div>
           <h2>Scan-Verlauf</h2>
-          <div className="subtitle">{scans.length} Scans durchgefuehrt</div>
+          <div className="subtitle">{scans.length} Scans durchgeführt</div>
         </div>
         <button
           className="btn btn-primary"
@@ -90,7 +90,7 @@ function ScanHistory() {
                 <div>{scan.services_found} Dienste</div>
               </div>
               <span className={`status-badge ${scan.status === 'completed' ? 'up' : scan.status === 'running' ? 'scanning' : 'down'}`}>
-                {scan.status === 'completed' ? 'Abgeschlossen' : scan.status === 'running' ? 'Laeuft' : 'Fehler'}
+                {scan.status === 'completed' ? 'Abgeschlossen' : scan.status === 'running' ? 'Läuft' : 'Fehler'}
               </span>
             </div>
           ))}

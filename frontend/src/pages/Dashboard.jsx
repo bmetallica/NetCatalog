@@ -61,7 +61,7 @@ function Dashboard() {
         <div>
           <h2>Dashboard</h2>
           <div className="subtitle">
-            Netzwerk-Uebersicht
+            Netzwerk-Übersicht
             {stats?.latestScan && (
               <> &middot; Letzter Scan: {new Date(stats.latestScan.finished_at || stats.latestScan.started_at).toLocaleString('de-DE')}</>
             )}
