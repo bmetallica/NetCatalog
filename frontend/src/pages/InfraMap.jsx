@@ -21,110 +21,160 @@ const TYPE_COLORS = {
   management: '#ec4899', device: '#6b7280',
 };
 
-const LAYER = {
+// Tier assignment for hierarchical layout
+const TIER = {
   gateway: 0, router: 0, firewall: 0,
   switch: 1, ap: 1, management: 1,
   hypervisor: 2, server: 2, nas: 2,
   vm: 3, client: 3, iot: 3, printer: 3, device: 3,
 };
 
-function initPositions(nodes, width, height) {
-  const cx = width / 2;
-  const cy = height / 2;
-  const layerRadii = [0, 150, 280, 420];
-  const layers = [[], [], [], []];
-
-  nodes.forEach(n => {
-    const l = LAYER[n.computed_type] ?? 3;
-    layers[l].push(n);
-  });
-
-  layers.forEach((layer, li) => {
-    const r = layerRadii[li];
-    layer.forEach((n, i) => {
-      if (r === 0) {
-        n.x = cx;
-        n.y = cy;
-      } else {
-        const angle = (2 * Math.PI * i) / layer.length - Math.PI / 2;
-        n.x = cx + r * Math.cos(angle);
-        n.y = cy + r * Math.sin(angle);
-      }
-      n.vx = 0;
-      n.vy = 0;
-    });
-  });
-}
-
-function runForceLayout(nodes, edges, width, height) {
-  const ITERATIONS = 120;
-  const REPULSION = 3000;
-  const ATTRACTION = 0.004;
-  const DAMPING = 0.85;
-  const nodeMap = new Map(nodes.map(n => [n.id, n]));
-
-  for (let iter = 0; iter < ITERATIONS; iter++) {
-    // Repulsion
-    for (let i = 0; i < nodes.length; i++) {
-      for (let j = i + 1; j < nodes.length; j++) {
-        const a = nodes[i], b = nodes[j];
-        let dx = a.x - b.x, dy = a.y - b.y;
-        let dist = Math.sqrt(dx * dx + dy * dy) || 1;
-        const force = REPULSION / (dist * dist);
-        const fx = (dx / dist) * force;
-        const fy = (dy / dist) * force;
-        a.vx += fx; a.vy += fy;
-        b.vx -= fx; b.vy -= fy;
-      }
-    }
-
-    // Attraction along edges
-    for (const e of edges) {
-      const a = nodeMap.get(e.source), b = nodeMap.get(e.target);
-      if (!a || !b) continue;
-      const dx = b.x - a.x, dy = b.y - a.y;
-      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-      const force = dist * ATTRACTION;
-      const fx = (dx / dist) * force;
-      const fy = (dy / dist) * force;
-      a.vx += fx; a.vy += fy;
-      b.vx -= fx; b.vy -= fy;
-    }
-
-    // Apply + damping + bounds
-    const pad = 40;
-    for (const n of nodes) {
-      if (n.pinned) continue;
-      n.vx *= DAMPING;
-      n.vy *= DAMPING;
-      n.x += n.vx;
-      n.y += n.vy;
-      n.x = Math.max(pad, Math.min(width - pad, n.x));
-      n.y = Math.max(pad, Math.min(height - pad, n.y));
-    }
-  }
-}
+// Group order within a tier (for visual clustering)
+const TYPE_ORDER = [
+  'gateway', 'firewall', 'router',
+  'switch', 'ap', 'management',
+  'hypervisor', 'server', 'nas',
+  'vm', 'client', 'iot', 'printer', 'device',
+];
 
 function computeEdges(hosts) {
   const edges = [];
-  const gateway = hosts.find(h => h.computed_type === 'gateway');
   const hostIds = new Set(hosts.map(h => h.id));
+  const gateway = hosts.find(h => h.computed_type === 'gateway');
+  const infraTypes = new Set(['gateway', 'router', 'firewall', 'switch', 'ap', 'management']);
+  const hypervisors = hosts.filter(h => h.computed_type === 'hypervisor');
 
   for (const h of hosts) {
     if (h.computed_type === 'gateway') continue;
+
+    // 1. Explicit parent always wins
     if (h.parent_host_id && hostIds.has(h.parent_host_id)) {
       edges.push({ source: h.parent_host_id, target: h.id });
-    } else if (gateway) {
-      edges.push({ source: gateway.id, target: h.id });
+      continue;
     }
+
+    // 2. VMs auto-attach to a hypervisor (first one found, or by subnet proximity)
+    if (h.computed_type === 'vm' && hypervisors.length > 0) {
+      const subnet = h.ip.split('.').slice(0, 3).join('.');
+      const sameSubnetHV = hypervisors.find(hv => hv.ip.startsWith(subnet));
+      const parent = sameSubnetHV || hypervisors[0];
+      edges.push({ source: parent.id, target: h.id });
+      continue;
+    }
+
+    // 3. Infrastructure → gateway
+    if (infraTypes.has(h.computed_type) && gateway) {
+      edges.push({ source: gateway.id, target: h.id });
+      continue;
+    }
+
+    // 4. Servers/NAS/Hypervisors → gateway (or first infra device)
+    if (['hypervisor', 'server', 'nas'].includes(h.computed_type) && gateway) {
+      edges.push({ source: gateway.id, target: h.id });
+      continue;
+    }
+
+    // 5. Remaining leaf devices: no edge (reduces clutter)
+    // They are placed in their tier row and belong visually to the structure
   }
   return edges;
+}
+
+function layoutHierarchical(nodes, edges, W, H) {
+  const PAD_X = 60, PAD_Y = 80;
+  const NODE_SPACING = 58;
+  const TIER_GAP = 160;
+
+  // Group by tier, then by type within tier
+  const tiers = [[], [], [], []];
+  nodes.forEach(n => {
+    const t = TIER[n.computed_type] ?? 3;
+    tiers[t].push(n);
+  });
+
+  // Sort within each tier by type order, then by IP
+  tiers.forEach(tier => {
+    tier.sort((a, b) => {
+      const ta = TYPE_ORDER.indexOf(a.computed_type);
+      const tb = TYPE_ORDER.indexOf(b.computed_type);
+      if (ta !== tb) return ta - tb;
+      return a.ip.localeCompare(b.ip, undefined, { numeric: true });
+    });
+  });
+
+  // Calculate dynamic canvas size
+  const maxTierWidth = Math.max(...tiers.map(t => t.length * NODE_SPACING));
+  const canvasW = Math.max(W, maxTierWidth + PAD_X * 2);
+  const canvasH = Math.max(H, tiers.length * TIER_GAP + PAD_Y * 2);
+
+  // Lay out each tier as a horizontal row, centered
+  tiers.forEach((tier, ti) => {
+    const y = PAD_Y + ti * TIER_GAP;
+    const totalWidth = tier.length * NODE_SPACING;
+    const startX = (canvasW - totalWidth) / 2 + NODE_SPACING / 2;
+
+    // Sub-group by type for visual gaps
+    let prevType = null;
+    let xOffset = 0;
+
+    tier.forEach((n, i) => {
+      if (prevType !== null && n.computed_type !== prevType) {
+        xOffset += NODE_SPACING * 0.5; // extra gap between type groups
+      }
+      n.x = startX + i * NODE_SPACING + xOffset;
+      n.y = y;
+      prevType = n.computed_type;
+    });
+
+    // Re-center after adding gaps
+    if (tier.length > 0) {
+      const actualWidth = tier[tier.length - 1].x - tier[0].x;
+      const shift = (canvasW - actualWidth) / 2 - tier[0].x;
+      tier.forEach(n => { n.x += shift; });
+    }
+  });
+
+  // Now nudge child nodes horizontally toward their parent to show relationships
+  const nodeMap = new Map(nodes.map(n => [n.id, n]));
+  // For edges that cross tiers, gently pull child toward parent X
+  for (let pass = 0; pass < 3; pass++) {
+    for (const e of edges) {
+      const parent = nodeMap.get(e.source);
+      const child = nodeMap.get(e.target);
+      if (!parent || !child) continue;
+      const parentTier = TIER[parent.computed_type] ?? 3;
+      const childTier = TIER[child.computed_type] ?? 3;
+      if (childTier > parentTier) {
+        // Pull child 20% toward parent X
+        child.x += (parent.x - child.x) * 0.2;
+      }
+    }
+  }
+
+  // Resolve overlaps within each tier
+  tiers.forEach(tier => {
+    if (tier.length < 2) return;
+    tier.sort((a, b) => a.x - b.x);
+    for (let i = 1; i < tier.length; i++) {
+      const minGap = 50;
+      if (tier[i].x - tier[i - 1].x < minGap) {
+        tier[i].x = tier[i - 1].x + minGap;
+      }
+    }
+    // Re-center
+    const actualWidth = tier[tier.length - 1].x - tier[0].x;
+    const shift = (canvasW - actualWidth) / 2 - tier[0].x;
+    tier.forEach(n => { n.x += shift; });
+  });
+
+  return { canvasW, canvasH };
 }
 
 function InfraMap() {
   const [topology, setTopology] = useState(null);
   const [nodes, setNodes] = useState([]);
   const [edges, setEdges] = useState([]);
+  const [canvasSize, setCanvasSize] = useState({ w: 2000, h: 900 });
   const [selectedId, setSelectedId] = useState(null);
   const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
   const [dragging, setDragging] = useState(null);
@@ -134,25 +184,41 @@ function InfraMap() {
   const svgRef = useRef(null);
   const navigate = useNavigate();
 
-  const W = 1200, H = 900;
-  const NODE_R = 24;
+  const NODE_R = 22;
+
+  const processTopology = useCallback((data, preservePositions = null) => {
+    const newNodes = data.hosts.map(h => ({ ...h }));
+    const newEdges = computeEdges(newNodes);
+    const { canvasW, canvasH } = layoutHierarchical(newNodes, newEdges, 2000, 900);
+
+    if (preservePositions) {
+      newNodes.forEach(n => {
+        const prev = preservePositions.get(n.id);
+        if (prev && prev.pinned) {
+          n.x = prev.x;
+          n.y = prev.y;
+          n.pinned = true;
+        }
+      });
+    }
+
+    return { newNodes, newEdges, canvasW, canvasH };
+  }, []);
 
   const fetchData = useCallback(async () => {
     try {
       const data = await api.getTopology();
       setTopology(data);
-      const newNodes = data.hosts.map(h => ({ ...h }));
-      initPositions(newNodes, W, H);
-      const newEdges = computeEdges(newNodes);
-      runForceLayout(newNodes, newEdges, W, H);
+      const { newNodes, newEdges, canvasW, canvasH } = processTopology(data);
       setNodes(newNodes);
       setEdges(newEdges);
+      setCanvasSize({ w: canvasW, h: canvasH });
     } catch (err) {
       console.error('Topology fetch failed:', err);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [processTopology]);
 
   useEffect(() => {
     fetchData();
@@ -162,26 +228,26 @@ function InfraMap() {
         setTopology(data);
         setNodes(prev => {
           const posMap = new Map(prev.map(n => [n.id, { x: n.x, y: n.y, pinned: n.pinned }]));
-          const updated = data.hosts.map(h => {
-            const pos = posMap.get(h.id);
-            return pos ? { ...h, x: pos.x, y: pos.y, pinned: pos.pinned } : { ...h, x: W / 2, y: H / 2 };
-          });
-          setEdges(computeEdges(updated));
-          return updated;
+          const { newNodes, newEdges, canvasW, canvasH } = processTopology(data, posMap);
+          setEdges(newEdges);
+          setCanvasSize({ w: canvasW, h: canvasH });
+          return newNodes;
         });
       } catch (err) { /* silent */ }
     }, 15000);
     return () => clearInterval(interval);
-  }, [fetchData]);
+  }, [fetchData, processTopology]);
 
   const selected = nodes.find(n => n.id === selectedId);
 
   const getSvgPoint = (e) => {
     const svg = svgRef.current;
     const rect = svg.getBoundingClientRect();
+    const scaleX = canvasSize.w / rect.width;
+    const scaleY = canvasSize.h / rect.height;
     return {
-      x: (e.clientX - rect.left - transform.x) / transform.scale,
-      y: (e.clientY - rect.top - transform.y) / transform.scale,
+      x: (e.clientX - rect.left) * scaleX / transform.scale - transform.x / transform.scale,
+      y: (e.clientY - rect.top) * scaleY / transform.scale - transform.y / transform.scale,
     };
   };
 
@@ -196,10 +262,8 @@ function InfraMap() {
 
   const onCanvasMouseDown = (e) => {
     if (e.button !== 0) return;
-    if (e.target === svgRef.current || e.target.tagName === 'svg') {
-      setPanning({ startX: e.clientX - transform.x, startY: e.clientY - transform.y });
-      setSelectedId(null);
-    }
+    setPanning({ startX: e.clientX - transform.x, startY: e.clientY - transform.y });
+    setSelectedId(null);
   };
 
   const onMouseMove = (e) => {
@@ -214,10 +278,9 @@ function InfraMap() {
 
     setNodes(prev => prev.map(n => n.id === dragging.id ? { ...n, x: nx, y: ny, pinned: true } : n));
 
-    // Check drop target
     const target = nodes.find(n =>
       n.id !== dragging.id &&
-      Math.hypot(n.x - nx, n.y - ny) < NODE_R * 2
+      Math.hypot(n.x - nx, n.y - ny) < NODE_R * 2.5
     );
     setDragTarget(target ? target.id : null);
   };
@@ -227,12 +290,14 @@ function InfraMap() {
     if (dragging && dragTarget) {
       try {
         await api.classifyHost(dragging.id, { parent_host_id: dragTarget });
+        const data = await api.getTopology();
+        setTopology(data);
         setNodes(prev => {
-          const updated = prev.map(n =>
-            n.id === dragging.id ? { ...n, parent_host_id: dragTarget } : n
-          );
-          setEdges(computeEdges(updated));
-          return updated;
+          const posMap = new Map(prev.map(n => [n.id, { x: n.x, y: n.y, pinned: n.pinned }]));
+          const { newNodes, newEdges, canvasW, canvasH } = processTopology(data, posMap);
+          setEdges(newEdges);
+          setCanvasSize({ w: canvasW, h: canvasH });
+          return newNodes;
         });
       } catch (err) {
         console.error('Parent assignment failed:', err);
@@ -245,7 +310,7 @@ function InfraMap() {
   const zoom = (delta) => {
     setTransform(t => ({
       ...t,
-      scale: Math.max(0.3, Math.min(3, t.scale + delta)),
+      scale: Math.max(0.2, Math.min(4, t.scale + delta)),
     }));
   };
 
@@ -263,17 +328,14 @@ function InfraMap() {
       if (field === 'device_type') data.device_type = value || null;
       if (field === 'parent_host_id') data.parent_host_id = value ? parseInt(value) : null;
       await api.classifyHost(selectedId, data);
-      // Refetch to get updated computed_type
       const topo = await api.getTopology();
       setTopology(topo);
       setNodes(prev => {
         const posMap = new Map(prev.map(n => [n.id, { x: n.x, y: n.y, pinned: n.pinned }]));
-        const updated = topo.hosts.map(h => {
-          const pos = posMap.get(h.id);
-          return pos ? { ...h, x: pos.x, y: pos.y, pinned: pos.pinned } : { ...h, x: W / 2, y: H / 2 };
-        });
-        setEdges(computeEdges(updated));
-        return updated;
+        const { newNodes, newEdges, canvasW, canvasH } = processTopology(topo, posMap);
+        setEdges(newEdges);
+        setCanvasSize({ w: canvasW, h: canvasH });
+        return newNodes;
       });
     } catch (err) {
       console.error('Classify failed:', err);
@@ -285,7 +347,16 @@ function InfraMap() {
   }
 
   const deviceTypes = topology?.deviceTypes || [];
-  const legendTypes = [...new Set(nodes.map(n => n.computed_type))].sort();
+  const legendTypes = [...new Set(nodes.map(n => n.computed_type))];
+  legendTypes.sort((a, b) => TYPE_ORDER.indexOf(a) - TYPE_ORDER.indexOf(b));
+
+  // Tier labels
+  const tierLabels = ['Netzwerk-Infrastruktur', 'Switches & Access Points', 'Server & Hypervisors', 'Endgeräte & VMs'];
+  const tierYs = [0, 1, 2, 3].map(t => {
+    const nodesInTier = nodes.filter(n => (TIER[n.computed_type] ?? 3) === t);
+    if (nodesInTier.length === 0) return null;
+    return nodesInTier[0].y;
+  });
 
   return (
     <div className="page">
@@ -312,7 +383,8 @@ function InfraMap() {
         <div className="infra-map-canvas">
           <svg
             ref={svgRef}
-            viewBox={`0 0 ${W} ${H}`}
+            viewBox={`0 0 ${canvasSize.w} ${canvasSize.h}`}
+            preserveAspectRatio="xMidYMid meet"
             onMouseDown={onCanvasMouseDown}
             onMouseMove={onMouseMove}
             onMouseUp={onMouseUp}
@@ -320,19 +392,43 @@ function InfraMap() {
             onWheel={onWheel}
           >
             <g transform={`translate(${transform.x},${transform.y}) scale(${transform.scale})`}>
+              {/* Tier background labels */}
+              {tierYs.map((y, i) => y !== null && (
+                <text key={i} x={30} y={y - 30}
+                  fill="var(--text-muted)" fontSize="13" fontWeight="600" opacity="0.5"
+                  fontFamily="Inter, sans-serif">
+                  {tierLabels[i]}
+                </text>
+              ))}
+
+              {/* Tier separator lines */}
+              {tierYs.map((y, i) => y !== null && i > 0 && (
+                <line key={`sep-${i}`}
+                  x1={20} y1={y - 45} x2={canvasSize.w - 20} y2={y - 45}
+                  stroke="var(--border)" strokeWidth="1" strokeDasharray="6 4" opacity="0.4" />
+              ))}
+
+              {/* Edges */}
               {edges.map((e, i) => {
                 const s = nodes.find(n => n.id === e.source);
                 const t = nodes.find(n => n.id === e.target);
                 if (!s || !t) return null;
                 const isHighlighted = selectedId && (e.source === selectedId || e.target === selectedId);
+
+                // Curved edges for better readability
+                const midY = (s.y + t.y) / 2;
+                const dx = t.x - s.x;
+                const curveOffset = Math.abs(dx) > 200 ? dx * 0.1 : 0;
+
                 return (
-                  <line key={i}
-                    x1={s.x} y1={s.y} x2={t.x} y2={t.y}
+                  <path key={i}
+                    d={`M ${s.x} ${s.y} Q ${s.x + curveOffset} ${midY} ${t.x} ${t.y}`}
                     className={`map-edge ${isHighlighted ? 'highlighted' : ''}`}
                   />
                 );
               })}
 
+              {/* Nodes */}
               {nodes.map(n => {
                 const Icon = ICON_MAP[n.computed_type] || HelpCircle;
                 const color = TYPE_COLORS[n.computed_type] || '#6b7280';
@@ -344,24 +440,27 @@ function InfraMap() {
                     onMouseDown={(e) => onMouseDown(e, n.id)}
                   >
                     <circle cx={n.x} cy={n.y} r={NODE_R}
-                      className={`node-ring ${n.status}`}
-                      style={isDropTarget ? {} : { fill: 'var(--bg-card)', stroke: n.status === 'up' ? 'var(--success)' : 'var(--danger)' }}
+                      fill="var(--bg-card)"
+                      stroke={isDropTarget ? 'var(--warning)' : n.status === 'up' ? 'var(--success)' : 'var(--danger)'}
+                      strokeWidth={isSelected ? 3 : 2}
+                      strokeDasharray={isDropTarget ? '6 3' : 'none'}
                     />
-                    <circle cx={n.x} cy={n.y} r={NODE_R - 4}
-                      fill={color} opacity={0.15} />
-                    <foreignObject x={n.x - 10} y={n.y - 10} width={20} height={20}>
+                    <circle cx={n.x} cy={n.y} r={NODE_R - 5}
+                      fill={color} opacity={0.18} />
+                    <foreignObject x={n.x - 9} y={n.y - 9} width={18} height={18}>
                       <div style={{ color, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        <Icon size={16} />
+                        <Icon size={15} />
                       </div>
                     </foreignObject>
-                    <text x={n.x} y={n.y + NODE_R + 14} className="node-label">
-                      {n.hostname || n.ip}
+                    <text x={n.x} y={n.y + NODE_R + 13} className="node-label">
+                      {(n.hostname || n.ip.split('.').slice(-1)[0])}
                     </text>
                     <title>
                       {n.hostname ? `${n.hostname} (${n.ip})` : n.ip}
                       {'\n'}Typ: {deviceTypes.find(d => d.value === n.computed_type)?.label || n.computed_type}
                       {'\n'}Status: {n.status === 'up' ? 'Online' : 'Offline'}
                       {'\n'}{n.service_count} Dienste
+                      {n.vendor ? `\nHersteller: ${n.vendor}` : ''}
                     </title>
                   </g>
                 );
@@ -399,6 +498,12 @@ function InfraMap() {
                 </span>
               </div>
             </div>
+            {selected.mac_address && (
+              <div className="info-item">
+                <label>MAC-Adresse</label>
+                <div className="value" style={{ fontFamily: 'monospace', fontSize: 12 }}>{selected.mac_address}</div>
+              </div>
+            )}
             {selected.vendor && (
               <div className="info-item">
                 <label>Hersteller</label>
