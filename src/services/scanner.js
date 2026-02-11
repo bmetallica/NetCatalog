@@ -46,17 +46,52 @@ async function parallelLimit(tasks, limit) {
 }
 
 /**
- * Ping individual hosts that might not be in the nmap sweep
- * (e.g., WLAN devices discovered via FritzBox, outside main network)
+ * Check if host is alive by attempting connections to common ports
+ * Uses TCP SYN (port 443, 80, 22) for reliability without special permissions
  */
-function pingHost(ip) {
+function checkHostAlive(ip) {
   return new Promise((resolve) => {
-    execFile('ping', ['-c', '1', '-W', '1', ip], {
-      timeout: 3000,
-    }, (err) => {
-      // Resolve with true (alive) or false (dead), never reject
-      resolve(!err);
-    });
+    const ports = [443, 80, 22]; // Try HTTPS, HTTP, SSH in order
+    let attempts = 0;
+    let foundOpen = false;
+
+    const tryPort = (portIndex) => {
+      if (foundOpen || portIndex >= ports.length) {
+        // If no port was open, try ICMP ping as fallback
+        if (!foundOpen) {
+          execFile('ping', ['-c', '1', '-W', '1', ip], {
+            timeout: 2000,
+          }, (err) => {
+            resolve(!err);
+          });
+        } else {
+          resolve(true);
+        }
+        return;
+      }
+
+      const port = ports[portIndex];
+      const socket = require('net').createConnection(
+        { host: ip, port, timeout: 1000 },
+        () => {
+          foundOpen = true;
+          socket.destroy();
+          resolve(true);
+        }
+      );
+
+      socket.on('error', () => {
+        socket.destroy();
+        tryPort(portIndex + 1);
+      });
+
+      socket.on('timeout', () => {
+        socket.destroy();
+        tryPort(portIndex + 1);
+      });
+    };
+
+    tryPort(0);
   });
 }
 
@@ -328,19 +363,19 @@ async function runScan() {
     const hostsNotInScan = existingHosts.filter(h => !allAliveIps.has(h.ip));
     
     if (hostsNotInScan.length > 0) {
-      console.log(`[Scanner] Phase 1.5 - Pinging ${hostsNotInScan.length} hosts not found in nmap scan...`);
-      const pingTasks = hostsNotInScan.map(h => async () => {
-        const isAlive = await pingHost(h.ip);
+      console.log(`[Scanner] Phase 1.5 - Checking ${hostsNotInScan.length} hosts not found in nmap scan...`);
+      const checkTasks = hostsNotInScan.map(h => async () => {
+        const isAlive = await checkHostAlive(h.ip);
         if (isAlive) {
-          console.log(`[Scanner]   ${h.ip} is alive (ping)`);
+          console.log(`[Scanner]   ${h.ip} is alive (port/ping check)`);
           allAliveIps.add(h.ip);
         }
         return { ip: h.ip, isAlive };
       });
       
-      const pingResults = await parallelLimit(pingTasks, 16); // Ping up to 16 hosts in parallel
-      const aliveFromPing = pingResults.filter(r => r.status === 'fulfilled' && r.value.isAlive).length;
-      console.log(`[Scanner] Phase 1.5 complete: ${aliveFromPing} additional hosts alive`);
+      const checkResults = await parallelLimit(checkTasks, 8); // Check up to 8 hosts in parallel
+      const aliveFromCheck = checkResults.filter(r => r.status === 'fulfilled' && r.value.isAlive).length;
+      console.log(`[Scanner] Phase 1.5 complete: ${aliveFromCheck} additional hosts alive`);
     }
 
     // Only mark hosts as down if they weren't found by EITHER ping sweep or port scan,
