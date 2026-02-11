@@ -3,21 +3,21 @@ import { useNavigate } from 'react-router-dom';
 import {
   Globe, Shield, Network as NetworkIcon, Wifi, Layers, Box, Server,
   HardDrive, Printer, Cpu, Monitor, HelpCircle, Settings as SettingsIcon,
-  ZoomIn, ZoomOut, Maximize, X, ExternalLink, Radar
+  ZoomIn, ZoomOut, Maximize, X, ExternalLink, Radar, Eye
 } from 'lucide-react';
 import { api } from '../api';
 
 const ICON_MAP = {
   gateway: Globe, router: Globe, firewall: Shield, switch: NetworkIcon,
   ap: Wifi, hypervisor: Layers, vm: Box, server: Server, nas: HardDrive,
-  printer: Printer, iot: Cpu, client: Monitor, management: SettingsIcon,
+  printer: Printer, camera: Eye, iot: Cpu, client: Monitor, management: SettingsIcon,
   device: HelpCircle,
 };
 
 const TYPE_COLORS = {
   gateway: '#f59e0b', router: '#f59e0b', firewall: '#ef4444', switch: '#3b82f6',
   ap: '#8b5cf6', hypervisor: '#06b6d4', vm: '#6366f1', server: '#22c55e',
-  nas: '#f97316', printer: '#a3a3a3', iot: '#14b8a6', client: '#64748b',
+  nas: '#f97316', printer: '#a3a3a3', camera: '#f43f5e', iot: '#14b8a6', client: '#64748b',
   management: '#ec4899', device: '#6b7280',
 };
 
@@ -26,7 +26,7 @@ const TIER = {
   gateway: 0, router: 0, firewall: 0,
   switch: 1, ap: 1, management: 1,
   hypervisor: 2, server: 2, nas: 2,
-  vm: 3, client: 3, iot: 3, printer: 3, device: 3,
+  vm: 3, client: 3, iot: 3, printer: 3, camera: 3, device: 3,
 };
 
 // Group order within a tier (for visual clustering)
@@ -34,7 +34,7 @@ const TYPE_ORDER = [
   'gateway', 'firewall', 'router',
   'switch', 'ap', 'management',
   'hypervisor', 'server', 'nas',
-  'vm', 'client', 'iot', 'printer', 'device',
+  'vm', 'client', 'iot', 'camera', 'printer', 'device',
 ];
 
 function computeEdges(hosts) {
@@ -367,24 +367,40 @@ function InfraMap() {
           <span className="subtitle">{nodes.length} Geräte klassifiziert</span>
         </div>
         <button
-          className="btn btn-primary"
+          className={`btn btn-primary ${discovering ? 'discovering' : ''}`}
           disabled={discovering}
           onClick={async () => {
             setDiscovering(true);
             try {
               await api.runDiscovery();
-              setTimeout(async () => {
-                await fetchData();
-                setDiscovering(false);
-              }, 8000);
+              // Poll topology every 5s until discovery finishes (~30s)
+              let polls = 0;
+              const poll = setInterval(async () => {
+                polls++;
+                try {
+                  const data = await api.getTopology();
+                  setTopology(data);
+                  setNodes(prev => {
+                    const posMap = new Map(prev.map(n => [n.id, { x: n.x, y: n.y, pinned: n.pinned }]));
+                    const { newNodes, newEdges, canvasW, canvasH } = processTopology(data, posMap);
+                    setEdges(newEdges);
+                    setCanvasSize({ w: canvasW, h: canvasH });
+                    return newNodes;
+                  });
+                } catch {}
+                if (polls >= 8) {
+                  clearInterval(poll);
+                  setDiscovering(false);
+                }
+              }, 5000);
             } catch (err) {
               console.error('Discovery error:', err);
               setDiscovering(false);
             }
           }}
         >
-          <Radar size={16} />
-          {discovering ? 'Analysiere...' : 'Deep Discovery'}
+          <Radar size={16} className={discovering ? 'spin' : ''} />
+          {discovering ? 'Analysiere Netzwerk...' : 'Deep Discovery'}
         </button>
       </div>
 

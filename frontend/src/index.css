@@ -577,6 +577,15 @@ a:hover { color: var(--accent-hover); }
   to { transform: rotate(360deg); }
 }
 
+.spin {
+  animation: spin 1.5s linear infinite;
+}
+
+.btn.discovering {
+  opacity: 0.85;
+  pointer-events: none;
+}
+
 /* Empty state */
 .empty-state {
   text-align: center;
