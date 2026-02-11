@@ -6,6 +6,10 @@ Vollständiger Index aller verfügbaren Dokumentationen.
 
 ## 📖 Dokumentation nach Use-Case
 
+### ⚡ Ich will NetCatalog in 5 Minuten installieren
+**→ [quickinstall.sh](./quickinstall.sh)** (Automatisiertes Script)  
+oder: [QUICKINSTALL_GUIDE.md](./QUICKINSTALL_GUIDE.md) (Script-Dokumentation)
+
 ### 🚀 Ich will NetCatalog schnell starten
 **→ [QUICKSTART.md](./QUICKSTART.md)** (5 Min Anleitung)
 
@@ -30,6 +34,8 @@ Vollständiger Index aller verfügbaren Dokumentationen.
 
 | Datei | Zeilen | Für Wen? | Inhalt |
 |-------|--------|----------|---------|
+| [quickinstall.sh](./quickinstall.sh) | 571 | **Admin** | ⚡ Automatisierte Installation (PostgreSQL + Dependencies) |
+| [QUICKINSTALL_GUIDE.md](./QUICKINSTALL_GUIDE.md) | 472 | **Admin** | 📖 Dokumentation für das QuickInstall Script |
 | [README.md](./README.md) | 661 | **Alle** | Überblick, Features, Installation, API, Troubleshooting |
 | [QUICKSTART.md](./QUICKSTART.md) | 190 | **Anfänger** | 10-Minuten Quick-Start Guide |
 | [INSTALLATION_GUIDE.md](./INSTALLATION_GUIDE.md) | 635 | **Admin** | Detaillierte Schritt-für-Schritt Installation |
@@ -38,7 +44,7 @@ Vollständiger Index aller verfügbaren Dokumentationen.
 | [PROJECT_UPDATES.md](./PROJECT_UPDATES.md) | 387 | **Manager** | Features, Status, Skalierbarkeit, TODOs |
 | [FRITZBOX_CHANGES.md](./FRITZBOX_CHANGES.md) | 75 | **Developer** | FritzBox Implementation Details |
 
-**Summe:** ~2.800 Zeilen Dokumentation
+**Summe:** ~3.750 Zeilen Dokumentation + Script
 
 ---
 

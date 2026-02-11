@@ -146,7 +146,30 @@ NetCatalog ist ein Full-Stack-System zur automatischen Erfassung und Verwaltung 
 
 ## 📦 Installation
 
-### 1. Repository klonen
+### ⚡ Automatisierte Installation (empfohlen)
+
+Für schnelle Einrichtung auf frischen Linux-Systemen (Ubuntu/Debian/RHEL):
+
+```bash
+git clone https://github.com/bmetallica/NetCatalog.git
+cd NetCatalog
+chmod +x quickinstall.sh
+./quickinstall.sh
+```
+
+Das Script automatisiert alle folgenden Schritte:
+- ✓ Abhängigkeiten prüfen & installieren
+- ✓ PostgreSQL einrichten (oder bestehende Datenbank nutzen)
+- ✓ Dependencies installieren
+- ✓ Datenbank initialisieren
+- ✓ Frontend bauen
+- ✓ Optional: Systemd Service einrichten
+
+👉 Siehe [QUICKINSTALL_GUIDE.md](./QUICKINSTALL_GUIDE.md) für detaillierte Informationen.
+
+---
+
+### 1. Repository klonen (manuelle Installation)
 
 ```bash
 git clone https://github.com/bmetallica/NetCatalog.git
