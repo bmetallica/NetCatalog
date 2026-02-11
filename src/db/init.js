@@ -65,7 +65,9 @@ INSERT INTO settings (key, value, description) VALUES
   ('scan_network', '192.168.66.0/24', 'Network CIDR to scan'),
   ('scan_interval', '30', 'Scan interval in minutes'),
   ('scan_ports', '1-10000', 'Port range to scan'),
-  ('scan_enabled', 'true', 'Enable automatic scanning')
+  ('scan_enabled', 'true', 'Enable automatic scanning'),
+  ('deep_discovery_enabled', 'true', 'Enable Deep Discovery topology analysis'),
+  ('deep_discovery_interval', '15', 'Deep Discovery interval in minutes (for AP handover detection)')
 ON CONFLICT (key) DO NOTHING;
 
 CREATE INDEX IF NOT EXISTS idx_hosts_ip ON hosts(ip_address);
@@ -136,9 +138,9 @@ EXCEPTION WHEN duplicate_column THEN NULL;
 END $$;
 
 INSERT INTO settings (key, value, description) VALUES
-  ('snmp_community', 'public', 'SNMP Community-Strings (kommagetrennt)'),
-  ('deep_discovery_enabled', 'true', 'Deep Discovery aktivieren'),
-  ('deep_discovery_interval', '60', 'Deep Discovery Intervall in Minuten')
+  ('snmp_community', 'public', 'SNMP Community strings (comma-separated)'),
+  ('deep_discovery_enabled', 'true', 'Enable Deep Discovery topology analysis'),
+  ('deep_discovery_interval', '15', 'Deep Discovery interval in minutes (for WLAN AP handover detection)')
 ON CONFLICT (key) DO NOTHING;
 
 INSERT INTO settings (key, value, description) VALUES
