@@ -33,7 +33,11 @@ async function getAll() {
 
 async function getById(id) {
   const hostRes = await pool.query(
-    `SELECT h.*, host(h.ip_address) as ip FROM hosts h WHERE h.id = $1`, [id]
+    `SELECT h.*, host(h.ip_address) as ip,
+      p.hostname as parent_hostname, host(p.ip_address) as parent_ip
+     FROM hosts h
+     LEFT JOIN hosts p ON h.parent_host_id = p.id
+     WHERE h.id = $1`, [id]
   );
   if (!hostRes.rows[0]) return null;
 

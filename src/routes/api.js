@@ -8,7 +8,7 @@ const { runScan, isScanning, getCurrentScanId } = require('../services/scanner')
 const { scheduleFromSettings } = require('../services/scheduler');
 const availabilityModel = require('../models/availability');
 const topologyModel = require('../models/topology');
-const { DEVICE_TYPES } = require('../services/classifier');
+const { classifyHost, DEVICE_TYPES } = require('../services/classifier');
 const { runDeepDiscovery } = require('../services/deepDiscovery');
 
 // Allowed settings keys and their validators
@@ -71,6 +71,14 @@ router.get('/hosts/:id', async (req, res) => {
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid host ID' });
     const host = await hostsModel.getById(id);
     if (!host) return res.status(404).json({ error: 'Host not found' });
+
+    // Add computed_type from classifier
+    const openServices = (host.services || []).filter(s => s.state === 'open');
+    const classification = classifyHost(host, openServices);
+    host.computed_type = host.device_type || classification.type;
+    host.classification_reason = classification.reason;
+    host.classification_confidence = classification.confidence;
+
     res.json(host);
   } catch (err) {
     res.status(500).json({ error: err.message });

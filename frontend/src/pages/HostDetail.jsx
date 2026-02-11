@@ -8,13 +8,34 @@ function HostDetail() {
   const navigate = useNavigate();
   const [host, setHost] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [deviceTypes, setDeviceTypes] = useState([]);
+  const [allHosts, setAllHosts] = useState([]);
 
   useEffect(() => {
-    api.getHost(id)
-      .then(setHost)
-      .catch(() => navigate('/hosts'))
+    Promise.all([
+      api.getHost(id),
+      api.getDeviceTypes(),
+      api.getHosts(),
+    ]).then(([h, dt, hosts]) => {
+      setHost(h);
+      setDeviceTypes(dt);
+      setAllHosts(hosts);
+    }).catch(() => navigate('/hosts'))
       .finally(() => setLoading(false));
   }, [id]);
+
+  const handleClassify = async (field, value) => {
+    try {
+      const data = {};
+      if (field === 'device_type') data.device_type = value || null;
+      if (field === 'parent_host_id') data.parent_host_id = value ? parseInt(value) : null;
+      await api.classifyHost(id, data);
+      const updated = await api.getHost(id);
+      setHost(updated);
+    } catch (err) {
+      console.error('Classify failed:', err);
+    }
+  };
 
   if (loading) {
     return <div className="loading"><div className="spinner" />Lade Host-Details...</div>;
@@ -113,6 +134,59 @@ function HostDetail() {
           <div className="info-item">
             <label>Offene Dienste</label>
             <div className="value">{openServices.length}</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 24 }}>
+        <h3 style={{ margin: '0 0 16px', fontSize: 16, fontWeight: 600 }}>Klassifizierung</h3>
+        <div className="info-grid">
+          <div className="info-item">
+            <label>Gerätetyp</label>
+            <select
+              value={host.device_type || ''}
+              onChange={(e) => handleClassify('device_type', e.target.value)}
+              style={{ width: '100%' }}
+            >
+              <option value="">
+                Automatisch ({deviceTypes.find(d => d.value === host.computed_type)?.label || host.computed_type || 'Unbekannt'})
+              </option>
+              {deviceTypes.map(dt => (
+                <option key={dt.value} value={dt.value}>{dt.label}</option>
+              ))}
+            </select>
+            {!host.device_type && host.classification_reason && (
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                {host.classification_reason} ({host.classification_confidence}%)
+              </div>
+            )}
+          </div>
+          <div className="info-item">
+            <label>Übergeordnetes Gerät</label>
+            <select
+              value={host.parent_host_id || ''}
+              onChange={(e) => handleClassify('parent_host_id', e.target.value)}
+              style={{ width: '100%' }}
+            >
+              <option value="">Kein (direkt am Gateway)</option>
+              {allHosts
+                .filter(h => h.id !== host.id)
+                .map(h => (
+                  <option key={h.id} value={h.id}>
+                    {h.hostname || h.ip} ({h.ip})
+                  </option>
+                ))}
+            </select>
+            {host.parent_host_id && host.parent_hostname && (
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                Aktuell: {host.parent_hostname} ({host.parent_ip})
+              </div>
+            )}
+            {host.parent_host_id && !host.parent_hostname && host.parent_ip && (
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                Aktuell: {host.parent_ip}
+              </div>
+            )}
           </div>
         </div>
       </div>

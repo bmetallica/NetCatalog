@@ -625,8 +625,9 @@ async function applyHints(hints, ipToHost) {
       continue;
     }
 
-    // Skip infra-to-switch assignments (they are physical peers, not logical children)
-    if (infraTypes.includes(childType) && parentType === 'switch' && rel.method === 'snmp_mac_table') {
+    // Allow switch-to-switch (cascading) if on edge port (few MACs)
+    // But skip gateway/firewall being assigned as child of a switch
+    if (['gateway', 'firewall'].includes(childType) && parentType === 'switch') {
       continue;
     }
 
