@@ -46,6 +46,21 @@ async function parallelLimit(tasks, limit) {
 }
 
 /**
+ * Ping individual hosts that might not be in the nmap sweep
+ * (e.g., WLAN devices discovered via FritzBox, outside main network)
+ */
+function pingHost(ip) {
+  return new Promise((resolve) => {
+    execFile('ping', ['-c', '1', '-W', '1', ip], {
+      timeout: 3000,
+    }, (err) => {
+      // Resolve with true (alive) or false (dead), never reject
+      resolve(!err);
+    });
+  });
+}
+
+/**
  * Phase 0: Ping sweep to discover which hosts are alive
  * Uses ARP (local net), ICMP echo, TCP SYN to port 443, TCP ACK to port 80
  * This is fast and reliable for determining host reachability
@@ -307,9 +322,29 @@ async function runScan() {
     const allAliveIps = new Set([...aliveHosts.keys(), ...portScanIps]);
     console.log(`[Scanner] Total alive hosts (ping + port scan): ${allAliveIps.size}`);
 
+    // Phase 1.5: Ping hosts that weren't found in nmap sweep
+    // (e.g., WLAN devices discovered via FritzBox, hosts outside main scan network)
+    const existingHosts = await hostsModel.getAllIds();
+    const hostsNotInScan = existingHosts.filter(h => !allAliveIps.has(h.ip));
+    
+    if (hostsNotInScan.length > 0) {
+      console.log(`[Scanner] Phase 1.5 - Pinging ${hostsNotInScan.length} hosts not found in nmap scan...`);
+      const pingTasks = hostsNotInScan.map(h => async () => {
+        const isAlive = await pingHost(h.ip);
+        if (isAlive) {
+          console.log(`[Scanner]   ${h.ip} is alive (ping)`);
+          allAliveIps.add(h.ip);
+        }
+        return { ip: h.ip, isAlive };
+      });
+      
+      const pingResults = await parallelLimit(pingTasks, 16); // Ping up to 16 hosts in parallel
+      const aliveFromPing = pingResults.filter(r => r.status === 'fulfilled' && r.value.isAlive).length;
+      console.log(`[Scanner] Phase 1.5 complete: ${aliveFromPing} additional hosts alive`);
+    }
+
     // Only mark hosts as down if they weren't found by EITHER ping sweep or port scan,
     // AND they haven't been seen recently (grace period of 2 hours)
-    const existingHosts = await hostsModel.getAllIds();
     const hostsToMarkDown = existingHosts
       .filter(h => !allAliveIps.has(h.ip))
       .map(h => h.id);
