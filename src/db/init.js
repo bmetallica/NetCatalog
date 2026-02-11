@@ -99,6 +99,16 @@ END $$;
 
 CREATE INDEX IF NOT EXISTS idx_hosts_parent ON hosts(parent_host_id);
 CREATE INDEX IF NOT EXISTS idx_hosts_device_type ON hosts(device_type);
+
+DO $$ BEGIN
+  ALTER TABLE hosts ADD COLUMN discovery_info JSONB DEFAULT NULL;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+INSERT INTO settings (key, value, description) VALUES
+  ('snmp_community', 'public', 'SNMP Community-Strings (kommagetrennt)'),
+  ('deep_discovery_enabled', 'true', 'Deep Discovery aktivieren')
+ON CONFLICT (key) DO NOTHING;
 `;
 
 async function initDatabase() {

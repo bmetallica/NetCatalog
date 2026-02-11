@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   Globe, Shield, Network as NetworkIcon, Wifi, Layers, Box, Server,
   HardDrive, Printer, Cpu, Monitor, HelpCircle, Settings as SettingsIcon,
-  ZoomIn, ZoomOut, Maximize, X, ExternalLink
+  ZoomIn, ZoomOut, Maximize, X, ExternalLink, Radar
 } from 'lucide-react';
 import { api } from '../api';
 
@@ -181,6 +181,7 @@ function InfraMap() {
   const [dragTarget, setDragTarget] = useState(null);
   const [panning, setPanning] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [discovering, setDiscovering] = useState(false);
   const svgRef = useRef(null);
   const navigate = useNavigate();
 
@@ -361,8 +362,30 @@ function InfraMap() {
   return (
     <div className="page">
       <div className="page-header">
-        <h2>Infrastruktur</h2>
-        <span className="subtitle">{nodes.length} Geräte klassifiziert</span>
+        <div>
+          <h2>Infrastruktur</h2>
+          <span className="subtitle">{nodes.length} Geräte klassifiziert</span>
+        </div>
+        <button
+          className="btn btn-primary"
+          disabled={discovering}
+          onClick={async () => {
+            setDiscovering(true);
+            try {
+              await api.runDiscovery();
+              setTimeout(async () => {
+                await fetchData();
+                setDiscovering(false);
+              }, 8000);
+            } catch (err) {
+              console.error('Discovery error:', err);
+              setDiscovering(false);
+            }
+          }}
+        >
+          <Radar size={16} />
+          {discovering ? 'Analysiere...' : 'Deep Discovery'}
+        </button>
       </div>
 
       <div className="map-legend">
@@ -526,6 +549,64 @@ function InfraMap() {
                 {selected.classification_reason} ({selected.classification_confidence}%)
               </div>
             </div>
+
+            {selected.discovery_info && Object.keys(selected.discovery_info).filter(k => k !== '_lastDiscovery').length > 0 && (
+              <>
+                <hr style={{ border: 'none', borderTop: '1px solid var(--border)', margin: '16px 0' }} />
+                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 8 }}>Deep Discovery</div>
+                {selected.discovery_info.snmp_info && (
+                  <div className="info-item">
+                    <label>SNMP</label>
+                    <div className="value" style={{ fontSize: 11 }}>
+                      {selected.discovery_info.snmp_info.sysName && <div>{selected.discovery_info.snmp_info.sysName}</div>}
+                      <div style={{ color: 'var(--text-muted)' }}>{selected.discovery_info.snmp_info.sysDescr?.substring(0, 80)}</div>
+                    </div>
+                  </div>
+                )}
+                {selected.discovery_info.ttl && (
+                  <div className="info-item">
+                    <label>TTL</label>
+                    <div className="value" style={{ fontSize: 12 }}>
+                      {selected.discovery_info.ttl.ttl} (→ {selected.discovery_info.ttl.osGuess}, {selected.discovery_info.ttl.hops} Hop{selected.discovery_info.ttl.hops !== 1 ? 's' : ''})
+                    </div>
+                  </div>
+                )}
+                {selected.discovery_info.ping_cluster && (
+                  <div className="info-item">
+                    <label>L2-Cluster</label>
+                    <div className="value" style={{ fontSize: 12 }}>
+                      Cluster #{selected.discovery_info.ping_cluster.cluster} ({selected.discovery_info.ping_cluster.clusterSize} Geräte, {selected.discovery_info.ping_cluster.rtt}ms)
+                    </div>
+                  </div>
+                )}
+                {selected.discovery_info.ssdp && (
+                  <div className="info-item">
+                    <label>UPnP/SSDP</label>
+                    <div className="value" style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                      {selected.discovery_info.ssdp.server || selected.discovery_info.ssdp.st}
+                    </div>
+                  </div>
+                )}
+                {selected.discovery_info.mdns && (
+                  <div className="info-item">
+                    <label>mDNS</label>
+                    <div className="value" style={{ fontSize: 11 }}>
+                      {Array.isArray(selected.discovery_info.mdns)
+                        ? selected.discovery_info.mdns.map(m => m.serviceType).join(', ')
+                        : selected.discovery_info.mdns.serviceType}
+                    </div>
+                  </div>
+                )}
+                {selected.discovery_info.traceroute && (
+                  <div className="info-item">
+                    <label>Traceroute</label>
+                    <div className="value" style={{ fontSize: 12 }}>
+                      {selected.discovery_info.traceroute.direct ? 'Direkt (0 Hops)' : `${selected.discovery_info.traceroute.hops} Hops`}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
 
             <hr style={{ border: 'none', borderTop: '1px solid var(--border)', margin: '16px 0' }} />
 

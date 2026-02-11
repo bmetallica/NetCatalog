@@ -9,6 +9,7 @@ const { scheduleFromSettings } = require('../services/scheduler');
 const availabilityModel = require('../models/availability');
 const topologyModel = require('../models/topology');
 const { DEVICE_TYPES } = require('../services/classifier');
+const { runDeepDiscovery } = require('../services/deepDiscovery');
 
 // Allowed settings keys and their validators
 const SETTINGS_VALIDATORS = {
@@ -29,6 +30,14 @@ const SETTINGS_VALIDATORS = {
     return null;
   },
   scan_enabled: (v) => {
+    if (v !== 'true' && v !== 'false') return 'Must be true or false';
+    return null;
+  },
+  snmp_community: (v) => {
+    if (!v || v.trim().length === 0) return 'Mindestens ein Community-String erforderlich';
+    return null;
+  },
+  deep_discovery_enabled: (v) => {
     if (v !== 'true' && v !== 'false') return 'Must be true or false';
     return null;
   },
@@ -208,6 +217,23 @@ router.put('/hosts/:id/classify', async (req, res) => {
     if (err.message.includes('eigener Parent') || err.message.includes('nicht gefunden')) {
       return res.status(400).json({ error: err.message });
     }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Manual deep discovery trigger
+router.post('/discovery/run', async (req, res) => {
+  if (isScanning()) {
+    return res.status(409).json({ error: 'Scan läuft bereits, bitte warten' });
+  }
+  try {
+    const network = await settingsModel.get('scan_network') || '192.168.66.0/24';
+    const topology = await topologyModel.getTopology();
+    res.json({ message: 'Deep Discovery gestartet', hosts: topology.hosts.length });
+    runDeepDiscovery(topology.hosts, network)
+      .then(r => console.log(`[API] Deep Discovery fertig: ${r.applied} Zuordnungen`))
+      .catch(err => console.error('[API] Deep Discovery Fehler:', err.message));
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });

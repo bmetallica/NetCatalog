@@ -6,6 +6,8 @@ const scansModel = require('../models/scans');
 const settingsModel = require('../models/settings');
 const availabilityModel = require('../models/availability');
 const { identifyService } = require('./serviceIdentifier');
+const { runDeepDiscovery } = require('./deepDiscovery');
+const topologyModel = require('../models/topology');
 
 let scanning = false;
 let currentScanId = null;
@@ -371,6 +373,15 @@ async function runScan() {
       if (host.ports.length > 0) {
         await servicesModel.markClosed(hostId, activePorts);
       }
+    }
+
+    // Phase 3: Deep Discovery (topology enrichment)
+    try {
+      const topology = await topologyModel.getTopology();
+      const discoveryResult = await runDeepDiscovery(topology.hosts, network);
+      console.log(`[Scanner] Phase 3 complete: ${discoveryResult.applied} topology relationships discovered`);
+    } catch (err) {
+      console.error(`[Scanner] Deep Discovery error (non-fatal): ${err.message}`);
     }
 
     await scansModel.finish(scanRecord.id, allAliveIps.size, totalServices, null);

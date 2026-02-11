@@ -104,6 +104,39 @@ function Settings() {
           </div>
         </div>
 
+        <div className="settings-separator" />
+        <h3 style={{ margin: '0 0 12px', fontSize: 15, color: 'var(--text-secondary)' }}>
+          Deep Discovery
+        </h3>
+
+        <div className="form-group">
+          <label>Deep Discovery</label>
+          <select
+            value={settings.deep_discovery_enabled || 'true'}
+            onChange={(e) => update('deep_discovery_enabled', e.target.value)}
+          >
+            <option value="true">Aktiviert</option>
+            <option value="false">Deaktiviert</option>
+          </select>
+          <div className="hint">
+            Erweiterte Topologie-Erkennung mittels SNMP, mDNS, SSDP, Traceroute, TTL und Ping-Clustering
+          </div>
+        </div>
+
+        <div className="form-group">
+          <label>SNMP Community-Strings</label>
+          <input
+            type="text"
+            value={settings.snmp_community || ''}
+            onChange={(e) => update('snmp_community', e.target.value)}
+            placeholder="z.B. public, private, MeinNetz"
+          />
+          <div className="hint">
+            Kommagetrennte Liste von SNMP Community-Strings zum Abfragen von Switches und Routern.
+            Standard: public
+          </div>
+        </div>
+
         <button
           className="btn btn-primary"
           onClick={handleSave}

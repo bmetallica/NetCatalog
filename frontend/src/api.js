@@ -34,4 +34,5 @@ export const api = {
       body: JSON.stringify(data),
     }),
   getDeviceTypes: () => fetchJson('/device-types'),
+  runDiscovery: () => fetchJson('/discovery/run', { method: 'POST' }),
 };

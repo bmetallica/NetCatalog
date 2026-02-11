@@ -50,6 +50,7 @@ async function getTopology() {
       classification_confidence: row.ip === gatewayIp && !row.device_type
         ? 99 : classification.confidence,
       parent_host_id: row.parent_host_id,
+      discovery_info: row.discovery_info || null,
       service_count: services.length,
     };
   });

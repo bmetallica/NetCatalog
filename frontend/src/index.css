@@ -446,6 +446,12 @@ a:hover { color: var(--accent-hover); }
   max-width: 600px;
 }
 
+.settings-separator {
+  height: 1px;
+  background: var(--border);
+  margin: 24px 0 20px;
+}
+
 .form-group {
   margin-bottom: 20px;
 }
