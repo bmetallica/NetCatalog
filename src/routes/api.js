@@ -4,12 +4,13 @@ const hostsModel = require('../models/hosts');
 const servicesModel = require('../models/services');
 const scansModel = require('../models/scans');
 const settingsModel = require('../models/settings');
-const { runScan, isScanning, getCurrentScanId } = require('../services/scanner');
-const { scheduleFromSettings } = require('../services/scheduler');
+const { runScan, isScanning, getCurrentScanId, runDeepDiscoveryStandalone, isDiscoveryRunning } = require('../services/scanner');
+const { scheduleFromSettings, scheduleDeepDiscovery } = require('../services/scheduler');
 const availabilityModel = require('../models/availability');
 const topologyModel = require('../models/topology');
 const { classifyHost, DEVICE_TYPES } = require('../services/classifier');
 const { runDeepDiscovery } = require('../services/deepDiscovery');
+const unifiClient = require('../services/unifiClient');
 
 // Allowed settings keys and their validators
 const SETTINGS_VALIDATORS = {
@@ -39,6 +40,20 @@ const SETTINGS_VALIDATORS = {
   },
   deep_discovery_enabled: (v) => {
     if (v !== 'true' && v !== 'false') return 'Must be true or false';
+    return null;
+  },
+  deep_discovery_interval: (v) => {
+    const n = parseInt(v);
+    if (isNaN(n) || n < 5 || n > 1440) return 'Intervall muss zwischen 5 und 1440 Minuten sein';
+    return null;
+  },
+  unifi_url: (v) => {
+    if (v === '') return null; // empty = disabled
+    if (!/^https?:\/\/.+/i.test(v)) return 'Muss eine gültige URL sein (https://...)';
+    return null;
+  },
+  unifi_token: (v) => {
+    if (v.length > 200) return 'Maximal 200 Zeichen';
     return null;
   },
 };
@@ -154,6 +169,7 @@ router.put('/settings', async (req, res) => {
     }
     // Re-schedule if interval/network changed
     await scheduleFromSettings();
+    await scheduleDeepDiscovery();
     const updated = await settingsModel.getAll();
     res.json(updated);
   } catch (err) {
@@ -231,16 +247,170 @@ router.put('/hosts/:id/classify', async (req, res) => {
 
 // Manual deep discovery trigger
 router.post('/discovery/run', async (req, res) => {
-  if (isScanning()) {
-    return res.status(409).json({ error: 'Scan läuft bereits, bitte warten' });
+  if (isDiscoveryRunning()) {
+    return res.status(409).json({ error: 'Deep Discovery läuft bereits' });
   }
   try {
-    const network = await settingsModel.get('scan_network') || '192.168.66.0/24';
-    const topology = await topologyModel.getTopology();
-    res.json({ message: 'Deep Discovery gestartet', hosts: topology.hosts.length });
-    runDeepDiscovery(topology.hosts, network)
+    res.json({ message: 'Deep Discovery gestartet' });
+    runDeepDiscoveryStandalone()
       .then(r => console.log(`[API] Deep Discovery fertig: ${r.applied} Zuordnungen`))
       .catch(err => console.error('[API] Deep Discovery Fehler:', err.message));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// UISP Controller connection test
+router.post('/unifi/test', async (req, res) => {
+  const { url, token } = req.body || {};
+  if (!url || !token) {
+    return res.status(400).json({ error: 'URL und API-Token erforderlich' });
+  }
+  try {
+    const result = await unifiClient.testConnection(url, token);
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Update Proxmox credentials for a host
+router.put('/hosts/:id/proxmox', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    console.log(`[API] PUT /hosts/${id}/proxmox`, JSON.stringify(req.body));
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid host ID' });
+
+    const { api_host, token_id, token_secret } = req.body;
+
+    // Validate input
+    if (api_host && !/^https?:\/\/.+/.test(api_host)) {
+      return res.status(400).json({ error: 'api_host muss eine gültige URL sein' });
+    }
+
+    const updated = await hostsModel.updateProxmoxCredentials(id, {
+      api_host: api_host || null,
+      token_id: token_id || null,
+      token_secret: token_secret || null,
+    });
+    console.log(`[API] Proxmox credentials updated for host ${id}: ${updated}`);
+
+    if (!updated) return res.status(404).json({ error: 'Host not found' });
+    res.json({ message: 'Proxmox-Credentials aktualisiert' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update FritzBox credentials for a host
+router.put('/hosts/:id/fritzbox', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    console.log(`[API] PUT /hosts/${id}/fritzbox`, JSON.stringify(req.body));
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid host ID' });
+
+    const { fritzbox_host, fritzbox_username, fritzbox_password } = req.body;
+
+    // Validate input
+    if (fritzbox_host && !/^https?:\/\/.+/.test(fritzbox_host)) {
+      return res.status(400).json({ error: 'fritzbox_host muss eine gültige URL sein (z.B. https://fritz.box)' });
+    }
+
+    const updated = await hostsModel.updateFritzBoxCredentials(id, {
+      fritzbox_host: fritzbox_host || null,
+      fritzbox_username: fritzbox_username || null,
+      fritzbox_password: fritzbox_password || null,
+    });
+    console.log(`[API] FritzBox credentials updated for host ${id}: ${updated}`);
+
+    if (!updated) return res.status(404).json({ error: 'Host not found' });
+    
+    // If credentials were set, trigger deep discovery to discover WLAN devices immediately
+    if (fritzbox_host && fritzbox_username && fritzbox_password) {
+      try {
+        console.log(`[API] Triggering Deep Discovery for FritzBox (host ${id})...`);
+        const { runDeepDiscoveryStandalone } = require('../services/scanner');
+        // Run in background, don't wait
+        setImmediate(() => {
+          runDeepDiscoveryStandalone().catch(err => 
+            console.error('[API] Deep Discovery failed:', err.message)
+          );
+        });
+      } catch (err) {
+        console.error('[API] Could not trigger Deep Discovery:', err.message);
+      }
+    }
+    
+    res.json({ message: 'FritzBox-Credentials aktualisiert' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Test FritzBox connection
+router.post('/fritzbox/test', async (req, res) => {
+  const { fritzbox_host, fritzbox_username, fritzbox_password } = req.body || {};
+  if (!fritzbox_host || !fritzbox_username || !fritzbox_password) {
+    return res.status(400).json({ error: 'Host, Benutzername und Passwort erforderlich' });
+  }
+  try {
+    const FritzBoxClient = require('../services/fritzboxClient');
+    const client = new FritzBoxClient(fritzbox_host, fritzbox_username, fritzbox_password);
+    const result = await client.testConnection();
+    
+    // Try to get WLAN devices, but it's optional
+    let devices = [];
+    try {
+      devices = await client.getWirelessDevices();
+    } catch (err) {
+      console.log('[FritzBox] Could not fetch WLAN devices:', err.message);
+      // This is OK - connection test still passes
+    }
+    
+    res.json({ 
+      ...result, 
+      device_count: devices.length, 
+      devices: devices.slice(0, 5),
+      wlanDevices: devices // Also return as wlanDevices for compatibility
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Debug endpoint to check FritzBox configuration
+router.get('/debug/fritzbox-hosts', async (req, res) => {
+  try {
+    const allHosts = await hostsModel.getFritzBoxHosts();
+    res.json({ count: allHosts.length, hosts: allHosts });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Debug endpoint to check Proxmox configuration
+router.get('/debug/proxmox-hosts', async (req, res) => {
+  try {
+    const allHosts = await hostsModel.getProxmoxHosts();
+    res.json({ count: allHosts.length, hosts: allHosts });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Debug endpoint to check specific host
+router.get('/debug/host/:ip', async (req, res) => {
+  try {
+    const pool = require('../db/pool');
+    const result = await pool.query(`
+      SELECT id, host(ip_address) as ip, hostname, device_type, os_guess,
+             proxmox_api_host, 
+             CASE WHEN proxmox_api_token_id IS NOT NULL THEN CONCAT('SET (', LENGTH(proxmox_api_token_id), ' chars)') ELSE 'NULL' END as token_id,
+             CASE WHEN proxmox_api_token_secret IS NOT NULL THEN CONCAT('SET (', LENGTH(proxmox_api_token_secret), ' chars)') ELSE 'NULL' END as token_secret
+      FROM hosts 
+      WHERE host(ip_address) = $1
+    `, [req.params.ip]);
+    res.json({ found: result.rows.length > 0, host: result.rows[0] || null });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -10,6 +10,7 @@ function HostDetail() {
   const [loading, setLoading] = useState(true);
   const [deviceTypes, setDeviceTypes] = useState([]);
   const [allHosts, setAllHosts] = useState([]);
+  const [showFritzBoxSection, setShowFritzBoxSection] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -190,6 +191,234 @@ function HostDetail() {
           </div>
         </div>
       </div>
+
+      {(host.computed_type === 'hypervisor' || host.device_type === 'hypervisor') && (
+        <>
+          <h3 style={{ marginBottom: 16, fontSize: 18, fontWeight: 600 }}>
+            Proxmox API
+          </h3>
+          <div className="card">
+            <div className="info-item">
+              <label>API Host</label>
+              <input
+                type="text"
+                placeholder="https://192.168.1.10:8006"
+                defaultValue={host.proxmox_api_host || ''}
+                onBlur={async (e) => {
+                  if (e.target.value !== (host.proxmox_api_host || '')) {
+                    try {
+                      await api.updateProxmoxCredentials(host.id, {
+                        api_host: e.target.value || null,
+                        token_id: host.proxmox_api_token_id,
+                        token_secret: host.proxmox_api_token_secret,
+                      });
+                      const updated = await api.getHost(id);
+                      setHost(updated);
+                    } catch (err) {
+                      alert('Fehler beim Speichern: ' + err.message);
+                    }
+                  }
+                }}
+                style={{ width: '100%' }}
+              />
+            </div>
+
+            <div className="info-item">
+              <label>Token ID</label>
+              <input
+                type="text"
+                placeholder="root@pam!monitoring"
+                defaultValue={host.proxmox_api_token_id || ''}
+                onBlur={async (e) => {
+                  if (e.target.value !== (host.proxmox_api_token_id || '')) {
+                    try {
+                      await api.updateProxmoxCredentials(host.id, {
+                        api_host: host.proxmox_api_host,
+                        token_id: e.target.value || null,
+                        token_secret: host.proxmox_api_token_secret,
+                      });
+                      const updated = await api.getHost(id);
+                      setHost(updated);
+                    } catch (err) {
+                      alert('Fehler beim Speichern: ' + err.message);
+                    }
+                  }
+                }}
+                style={{ width: '100%' }}
+              />
+            </div>
+
+            <div className="info-item">
+              <label>Token Secret</label>
+              <input
+                type="password"
+                placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                defaultValue={host.proxmox_api_token_secret || ''}
+                onBlur={async (e) => {
+                  if (e.target.value !== (host.proxmox_api_token_secret || '')) {
+                    try {
+                      await api.updateProxmoxCredentials(host.id, {
+                        api_host: host.proxmox_api_host,
+                        token_id: host.proxmox_api_token_id,
+                        token_secret: e.target.value || null,
+                      });
+                      const updated = await api.getHost(id);
+                      setHost(updated);
+                    } catch (err) {
+                      alert('Fehler beim Speichern: ' + err.message);
+                    }
+                  }
+                }}
+                style={{ width: '100%' }}
+              />
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 8 }}>
+              VMs werden bei Deep Discovery automatisch diesem Hypervisor zugeordnet
+            </div>
+            
+            {host.proxmox_api_host && host.proxmox_api_token_id && host.proxmox_api_token_secret && (
+              <button
+                className="btn btn-secondary"
+                style={{ marginTop: 12, width: '100%' }}
+                onClick={async () => {
+                  try {
+                    const result = await api.testProxmoxConnection({
+                      api_host: host.proxmox_api_host,
+                      token_id: host.proxmox_api_token_id,
+                      token_secret: host.proxmox_api_token_secret,
+                    });
+                    alert(`✅ Verbindung erfolgreich!\n\nProxmox Version: ${result.version}\n${result.vm_count} VMs gefunden\n\nBeispiel-VMs:\n${result.vms.map(v => `- ${v.name} (${v.status})`).join('\n')}`);
+                  } catch (err) {
+                    alert(`❌ Verbindung fehlgeschlagen:\n\n${err.message}`);
+                  }
+                }}
+              >
+                Proxmox-Verbindung testen
+              </button>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* FritzBox Section: Show for AVM devices that are gateway/router/firewall/ap */}
+      {(host.vendor?.includes('AVM') || host.discovery_info?.ssdp?.server?.includes('FRITZ!Box')) && (host.computed_type === 'gateway' || host.computed_type === 'router' || host.device_type === 'gateway' || host.device_type === 'router' || host.computed_type === 'firewall' || host.device_type === 'firewall' || host.computed_type === 'ap' || host.device_type === 'ap' || showFritzBoxSection) && (
+        <>
+          <h3 style={{ marginBottom: 16, fontSize: 18, fontWeight: 600 }}>
+            FritzBox Zugangsdaten
+          </h3>
+          <div className="card">
+            <div className="info-item">
+              <label>FritzBox Host/URL</label>
+              <input
+                type="text"
+                placeholder="https://fritz.box oder https://192.168.178.1"
+                defaultValue={host.fritzbox_host || ''}
+                onBlur={async (e) => {
+                  if (e.target.value !== (host.fritzbox_host || '')) {
+                    try {
+                      await api.updateFritzBoxCredentials(host.id, {
+                        fritzbox_host: e.target.value || null,
+                        fritzbox_username: host.fritzbox_username,
+                        fritzbox_password: host.fritzbox_password,
+                      });
+                      const updated = await api.getHost(id);
+                      setHost(updated);
+                    } catch (err) {
+                      alert('Fehler beim Speichern: ' + err.message);
+                    }
+                  }
+                }}
+                style={{ width: '100%' }}
+              />
+            </div>
+
+            <div className="info-item">
+              <label>Benutzername</label>
+              <input
+                type="text"
+                placeholder="admin"
+                defaultValue={host.fritzbox_username || ''}
+                onBlur={async (e) => {
+                  if (e.target.value !== (host.fritzbox_username || '')) {
+                    try {
+                      await api.updateFritzBoxCredentials(host.id, {
+                        fritzbox_host: host.fritzbox_host,
+                        fritzbox_username: e.target.value || null,
+                        fritzbox_password: host.fritzbox_password,
+                      });
+                      const updated = await api.getHost(id);
+                      setHost(updated);
+                    } catch (err) {
+                      alert('Fehler beim Speichern: ' + err.message);
+                    }
+                  }
+                }}
+                style={{ width: '100%' }}
+              />
+            </div>
+
+            <div className="info-item">
+              <label>Passwort</label>
+              <input
+                type="password"
+                placeholder="Passwort der FritzBox"
+                defaultValue={host.fritzbox_password || ''}
+                onBlur={async (e) => {
+                  if (e.target.value !== (host.fritzbox_password || '')) {
+                    try {
+                      await api.updateFritzBoxCredentials(host.id, {
+                        fritzbox_host: host.fritzbox_host,
+                        fritzbox_username: host.fritzbox_username,
+                        fritzbox_password: e.target.value || null,
+                      });
+                      const updated = await api.getHost(id);
+                      setHost(updated);
+                    } catch (err) {
+                      alert('Fehler beim Speichern: ' + err.message);
+                    }
+                  }
+                }}
+                style={{ width: '100%' }}
+              />
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 8 }}>
+              WLAN-verbundene Geräte werden bei Deep Discovery automatisch dieser FritzBox zugeordnet
+            </div>
+            
+            {host.fritzbox_host && host.fritzbox_username && host.fritzbox_password && (
+              <button
+                className="btn btn-secondary"
+                style={{ marginTop: 12, width: '100%' }}
+                onClick={async () => {
+                  try {
+                    const result = await api.testFritzBoxConnection({
+                      fritzbox_host: host.fritzbox_host,
+                      fritzbox_username: host.fritzbox_username,
+                      fritzbox_password: host.fritzbox_password,
+                    });
+                    alert(`✅ Verbindung erfolgreich!\n\nModell: ${result.modelName}\nFirmware: ${result.softwareVersion}\nSerial: ${result.serialNumber}\n\n${result.device_count} WLAN-Geräte gefunden\n\nBeispiel-Geräte:\n${result.devices.map(d => `- ${d.hostname || d.mac} (Signal: ${d.signalStrength}dBm)`).join('\n')}`);
+                  } catch (err) {
+                    alert(`❌ Verbindung fehlgeschlagen:\n\n${err.message}`);
+                  }
+                }}
+              >
+                FritzBox-Verbindung testen
+              </button>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* Button to show FritzBox section for unrecognized devices */}
+      {!(host.computed_type === 'gateway' || host.computed_type === 'router' || host.device_type === 'gateway' || host.device_type === 'router' || host.computed_type === 'firewall' || host.device_type === 'firewall' || host.computed_type === 'ap' || host.device_type === 'ap') && !showFritzBoxSection && (
+        <button
+          className="btn btn-secondary"
+          style={{ marginBottom: 20, width: '100%' }}
+          onClick={() => setShowFritzBoxSection(true)}
+        >
+          + FritzBox Zugangsdaten eingeben
+        </button>
+      )}
 
       <h3 style={{ marginBottom: 16, fontSize: 18, fontWeight: 600 }}>
         Dienste ({openServices.length})

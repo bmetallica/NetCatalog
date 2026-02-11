@@ -55,6 +55,24 @@ function classifyHost(host, services) {
   const openServices = (services || []).filter(s => s.state === 'open' || !s.state);
   const di = host.discovery_info || {};
 
+  // 2. Check discovery_info for manufacturer hints (especially FritzBox)
+  const discoveryVendor = di.mdns?.name || di.ssdp?.server || di.upnp_device || '';
+  const combinedVendor = (vendor + ' ' + discoveryVendor).toLowerCase();
+
+  // FritzBox/AVM early detection from HTTP server banner or discovery
+  if (/fritz!?box|avm.*fritz|fritz.*avm/i.test(combinedVendor + ' ' + host.hostname)) {
+    return { type: 'router', confidence: 85, reason: 'FritzBox erkannt' };
+  }
+  
+  // Also check in services for FritzBox HTTP banner
+  for (const svc of openServices) {
+    const banner = (svc.banner || '').toLowerCase();
+    const serverHeader = (svc.http_server || '').toLowerCase();
+    if (/fritz!?box/i.test(banner + serverHeader) || /avm.*uhttp/i.test(serverHeader)) {
+      return { type: 'router', confidence: 88, reason: `FritzBox HTTP-Banner erkannt (Port ${svc.port})` };
+    }
+  }
+
   // 2. SNMP sysDescr — most reliable source
   const snmpDescr = (di.snmp_info?.sysDescr || '').toLowerCase();
   if (snmpDescr) {
@@ -228,6 +246,10 @@ function classifyHost(host, services) {
   for (const rule of vendorRules) {
     if (rule.pattern.test(vendor)) {
       return { type: rule.type, confidence: 70, reason: `Hersteller: ${rule.reason}` };
+    }
+    // Also check discovery vendor
+    if (rule.pattern.test(combinedVendor)) {
+      return { type: rule.type, confidence: 72, reason: `Entdeckt: ${rule.reason}` };
     }
   }
 

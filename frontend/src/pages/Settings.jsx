@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Save, Check } from 'lucide-react';
+import { Save, Check, Wifi, CheckCircle, AlertCircle, Loader } from 'lucide-react';
 import { api } from '../api';
 
 function Settings() {
@@ -7,13 +7,30 @@ function Settings() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [showUnifi, setShowUnifi] = useState(false);
+  const [unifiDetectedUrl, setUnifiDetectedUrl] = useState('');
+  const [unifiTesting, setUnifiTesting] = useState(false);
+  const [unifiTestResult, setUnifiTestResult] = useState(null);
 
   useEffect(() => {
-    api.getSettings()
-      .then((data) => {
+    Promise.all([api.getSettings(), api.getTopology()])
+      .then(([data, topology]) => {
         const obj = {};
         data.forEach((s) => { obj[s.key] = s.value; });
         setSettings(obj);
+
+        // Show UniFi section if any Ubiquiti device found, or UniFi service detected, or already configured
+        const hasConfig = obj.unifi_url && obj.unifi_url.length > 0;
+        const hosts = topology.hosts || [];
+        const ubiquitiHost = hosts.find(h => /ubiquiti/i.test(h.vendor || ''));
+        const unifiServiceHost = hosts.find(h =>
+          (h.services || []).some(s => /unifi/i.test(s.identified_as || '') || /unifi/i.test(s.service_name || ''))
+        );
+        if (unifiServiceHost) {
+          const svc = (unifiServiceHost.services || []).find(s => /unifi/i.test(s.identified_as || '') || /unifi/i.test(s.service_name || ''));
+          setUnifiDetectedUrl(`https://${unifiServiceHost.ip}:${svc?.port || 8443}`);
+        }
+        setShowUnifi(hasConfig || !!ubiquitiHost || !!unifiServiceHost);
       })
       .catch(console.error)
       .finally(() => setLoading(false));
@@ -34,6 +51,25 @@ function Settings() {
 
   const update = (key, value) => {
     setSettings((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const handleUnifiTest = async () => {
+    const url = settings.unifi_url || '';
+    const token = settings.unifi_token || '';
+    if (!url || !token) {
+      setUnifiTestResult({ success: false, error: 'URL und API-Token erforderlich' });
+      return;
+    }
+    setUnifiTesting(true);
+    setUnifiTestResult(null);
+    try {
+      const result = await api.testUnifi(url, token);
+      setUnifiTestResult(result);
+    } catch (err) {
+      setUnifiTestResult({ success: false, error: err.message });
+    } finally {
+      setUnifiTesting(false);
+    }
   };
 
   if (loading) {
@@ -119,7 +155,21 @@ function Settings() {
             <option value="false">Deaktiviert</option>
           </select>
           <div className="hint">
-            Erweiterte Topologie-Erkennung mittels SNMP, mDNS, SSDP, Traceroute, TTL und Ping-Clustering
+            Erweiterte Topologie-Erkennung mittels SNMP, mDNS, SSDP, Traceroute, TTL, Ping-Clustering und Proxmox
+          </div>
+        </div>
+
+        <div className="form-group">
+          <label>Deep Discovery Intervall (Minuten)</label>
+          <input
+            type="number"
+            min="5"
+            max="1440"
+            value={settings.deep_discovery_interval || '60'}
+            onChange={(e) => update('deep_discovery_interval', e.target.value)}
+          />
+          <div className="hint">
+            Wie oft Deep Discovery automatisch ausgeführt wird (5-1440 Minuten). Läuft unabhängig vom normalen Scan.
           </div>
         </div>
 
@@ -136,6 +186,74 @@ function Settings() {
             Standard: public
           </div>
         </div>
+
+        {showUnifi && (
+          <>
+            <div className="settings-separator" />
+            <h3 style={{ margin: '0 0 4px', fontSize: 15, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <Wifi size={15} /> UISP / Ubiquiti
+            </h3>
+            <div className="hint" style={{ marginBottom: 12 }}>
+              {unifiDetectedUrl
+                ? 'Ubiquiti-Geräte wurden im Netzwerk erkannt. UISP-API-Token eingeben um WLAN-Clients ihren Access Points zuzuordnen.'
+                : 'UISP-Integration für WLAN-Client-Zuordnung zu Access Points.'}
+            </div>
+
+            <div className="form-group">
+              <label>UISP-URL</label>
+              <input
+                type="text"
+                value={settings.unifi_url || ''}
+                onChange={(e) => update('unifi_url', e.target.value)}
+                placeholder={unifiDetectedUrl || 'https://192.168.1.1'}
+              />
+              <div className="hint">HTTPS-URL des UISP Controllers. Selbstsignierte Zertifikate werden akzeptiert.</div>
+            </div>
+
+            <div className="form-group">
+              <label>API-Token</label>
+              <input
+                type="password"
+                value={settings.unifi_token || ''}
+                onChange={(e) => update('unifi_token', e.target.value)}
+                placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                autoComplete="off"
+                style={{ fontFamily: 'monospace' }}
+              />
+              <div className="hint">
+                API-Token aus UISP: Benutzer-Einstellungen &rarr; API Tokens &rarr; Token erstellen
+              </div>
+            </div>
+
+            <button
+              className="btn btn-secondary"
+              onClick={handleUnifiTest}
+              disabled={unifiTesting}
+              style={{ marginBottom: 8 }}
+            >
+              {unifiTesting ? <Loader size={14} className="spin" /> : <Wifi size={14} />}
+              {unifiTesting ? 'Teste Verbindung...' : 'Verbindung testen'}
+            </button>
+
+            {unifiTestResult && (
+              <div style={{
+                padding: '8px 12px',
+                borderRadius: 'var(--radius-sm)',
+                fontSize: 13,
+                marginBottom: 8,
+                background: unifiTestResult.success ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)',
+                color: unifiTestResult.success ? 'var(--success)' : 'var(--danger)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+              }}>
+                {unifiTestResult.success
+                  ? <><CheckCircle size={14} /> Verbunden: {unifiTestResult.deviceCount} Geräte, {unifiTestResult.clientCount} WLAN-Clients</>
+                  : <><AlertCircle size={14} /> {unifiTestResult.error}</>}
+              </div>
+            )}
+          </>
+        )}
 
         <button
           className="btn btn-primary"

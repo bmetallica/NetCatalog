@@ -21,15 +21,6 @@ const TYPE_COLORS = {
   management: '#ec4899', device: '#6b7280',
 };
 
-// Tier assignment for hierarchical layout
-const TIER = {
-  gateway: 0, router: 0, firewall: 0,
-  switch: 1, ap: 1, management: 1,
-  hypervisor: 2, server: 2, nas: 2,
-  vm: 3, client: 3, iot: 3, printer: 3, camera: 3, device: 3,
-};
-
-// Group order within a tier (for visual clustering)
 const TYPE_ORDER = [
   'gateway', 'firewall', 'router',
   'switch', 'ap', 'management',
@@ -41,7 +32,6 @@ function computeEdges(hosts) {
   const edges = [];
   const hostIds = new Set(hosts.map(h => h.id));
   const gateway = hosts.find(h => h.computed_type === 'gateway');
-  const infraTypes = new Set(['gateway', 'router', 'firewall', 'switch', 'ap', 'management']);
   const hypervisors = hosts.filter(h => h.computed_type === 'hypervisor');
 
   for (const h of hosts) {
@@ -53,122 +43,219 @@ function computeEdges(hosts) {
       continue;
     }
 
-    // 2. VMs auto-attach to a hypervisor (first one found, or by subnet proximity)
+    // 2. VMs auto-attach to a hypervisor
     if (h.computed_type === 'vm' && hypervisors.length > 0) {
-      const subnet = h.ip.split('.').slice(0, 3).join('.');
-      const sameSubnetHV = hypervisors.find(hv => hv.ip.startsWith(subnet));
-      const parent = sameSubnetHV || hypervisors[0];
+      const vmSubnet = h.ip.split('.').slice(0, 3).join('.');
+      
+      // Try to find hypervisor in same /24 subnet with exact match
+      const sameSubnetHV = hypervisors.find(hv => {
+        const hvSubnet = hv.ip.split('.').slice(0, 3).join('.');
+        return hvSubnet === vmSubnet;
+      });
+      
+      // If no exact subnet match, check for ping cluster or traceroute info
+      let clusterHV = null;
+      if (!sameSubnetHV && h.discovery_info?.ping_cluster) {
+        clusterHV = hypervisors.find(hv => 
+          hv.discovery_info?.ping_cluster?.cluster === h.discovery_info.ping_cluster.cluster
+        );
+      }
+      
+      // Use: same subnet > same cluster > first hypervisor
+      const parent = sameSubnetHV || clusterHV || hypervisors[0];
       edges.push({ source: parent.id, target: h.id });
       continue;
     }
 
-    // 3. Infrastructure → gateway
-    if (infraTypes.has(h.computed_type) && gateway) {
+    // 3. Everything → gateway so the tree is complete
+    if (gateway) {
       edges.push({ source: gateway.id, target: h.id });
-      continue;
     }
-
-    // 4. Servers/NAS/Hypervisors → gateway (or first infra device)
-    if (['hypervisor', 'server', 'nas'].includes(h.computed_type) && gateway) {
-      edges.push({ source: gateway.id, target: h.id });
-      continue;
-    }
-
-    // 5. Remaining leaf devices: no edge (reduces clutter)
-    // They are placed in their tier row and belong visually to the structure
   }
   return edges;
 }
 
-function layoutHierarchical(nodes, edges, W, H) {
-  const PAD_X = 60, PAD_Y = 80;
-  const NODE_SPACING = 58;
-  const TIER_GAP = 160;
+// ── Radial-tree layout ───────────────────────────────────────
+//
+// Hub nodes (have children) → tree layout below their parent
+// Leaf nodes (no children)  → radial arc around their parent
 
-  // Group by tier, then by type within tier
-  const tiers = [[], [], [], []];
-  nodes.forEach(n => {
-    const t = TIER[n.computed_type] ?? 3;
-    tiers[t].push(n);
-  });
+function layoutTree(nodes, edges) {
+  const LEVEL_H = 500;   // even more vertical gap between hub levels
+  const PAD = 100;
+  const MIN_ARC_SPACING = 60; // min gap between leaf nodes on the arc
 
-  // Sort within each tier by type order, then by IP
-  tiers.forEach(tier => {
-    tier.sort((a, b) => {
-      const ta = TYPE_ORDER.indexOf(a.computed_type);
-      const tb = TYPE_ORDER.indexOf(b.computed_type);
-      if (ta !== tb) return ta - tb;
-      return a.ip.localeCompare(b.ip, undefined, { numeric: true });
-    });
-  });
-
-  // Calculate dynamic canvas size
-  const maxTierWidth = Math.max(...tiers.map(t => t.length * NODE_SPACING));
-  const canvasW = Math.max(W, maxTierWidth + PAD_X * 2);
-  const canvasH = Math.max(H, tiers.length * TIER_GAP + PAD_Y * 2);
-
-  // Lay out each tier as a horizontal row, centered
-  tiers.forEach((tier, ti) => {
-    const y = PAD_Y + ti * TIER_GAP;
-    const totalWidth = tier.length * NODE_SPACING;
-    const startX = (canvasW - totalWidth) / 2 + NODE_SPACING / 2;
-
-    // Sub-group by type for visual gaps
-    let prevType = null;
-    let xOffset = 0;
-
-    tier.forEach((n, i) => {
-      if (prevType !== null && n.computed_type !== prevType) {
-        xOffset += NODE_SPACING * 0.5; // extra gap between type groups
-      }
-      n.x = startX + i * NODE_SPACING + xOffset;
-      n.y = y;
-      prevType = n.computed_type;
-    });
-
-    // Re-center after adding gaps
-    if (tier.length > 0) {
-      const actualWidth = tier[tier.length - 1].x - tier[0].x;
-      const shift = (canvasW - actualWidth) / 2 - tier[0].x;
-      tier.forEach(n => { n.x += shift; });
-    }
-  });
-
-  // Now nudge child nodes horizontally toward their parent to show relationships
   const nodeMap = new Map(nodes.map(n => [n.id, n]));
-  // For edges that cross tiers, gently pull child toward parent X
-  for (let pass = 0; pass < 3; pass++) {
-    for (const e of edges) {
-      const parent = nodeMap.get(e.source);
-      const child = nodeMap.get(e.target);
-      if (!parent || !child) continue;
-      const parentTier = TIER[parent.computed_type] ?? 3;
-      const childTier = TIER[child.computed_type] ?? 3;
-      if (childTier > parentTier) {
-        // Pull child 20% toward parent X
-        child.x += (parent.x - child.x) * 0.2;
+  const childrenOf = new Map();
+  const parentOf = new Map();
+
+  for (const e of edges) {
+    if (!childrenOf.has(e.source)) childrenOf.set(e.source, []);
+    childrenOf.get(e.source).push(e.target);
+    parentOf.set(e.target, e.source);
+  }
+
+  // Classify each child as hub (has own children) or leaf
+  function getHubs(id) {
+    return (childrenOf.get(id) || []).filter(c => (childrenOf.get(c) || []).length > 0);
+  }
+  function getLeaves(id) {
+    return (childrenOf.get(id) || []).filter(c => (childrenOf.get(c) || []).length === 0);
+  }
+
+  // Sort children by type then IP
+  for (const [, children] of childrenOf) {
+    children.sort((a, b) => {
+      const na = nodeMap.get(a), nb = nodeMap.get(b);
+      if (!na || !nb) return 0;
+      const ta = TYPE_ORDER.indexOf(na.computed_type);
+      const tb = TYPE_ORDER.indexOf(nb.computed_type);
+      if (ta !== tb) return ta - tb;
+      return na.ip.localeCompare(nb.ip, undefined, { numeric: true });
+    });
+  }
+
+  // Radial dimensions - tight, compact circles
+  function ringRadius(n) {
+    if (n === 0) return 0;
+    if (n === 1) return 60;
+    if (n === 2) return 70;
+    if (n === 3) return 80;
+    if (n === 4) return 90;
+    if (n === 5) return 100;
+    if (n <= 8) return 100 + (n - 5) * 12;
+    if (n <= 12) return 136 + (n - 8) * 15;
+    if (n <= 20) return 196 + (n - 12) * 18;
+    // Large groups
+    return 340 + (n - 20) * 20;
+  }
+
+  // Subtree width in pixels - must account for full radial extent
+  const widthOf = new Map();
+  function calcWidth(id) {
+    if (widthOf.has(id)) return widthOf.get(id);
+    const hubs = getHubs(id);
+    const leaves = getLeaves(id);
+
+    if (hubs.length === 0 && leaves.length === 0) {
+      widthOf.set(id, 100);
+      return 100;
+    }
+
+    const hubW = hubs.reduce((s, c) => s + calcWidth(c), 0)
+               + Math.max(0, hubs.length - 1) * 120;
+    
+    // For leaves: full diameter with moderate margin (circles are now compact)
+    const leafW = leaves.length > 0 ? (ringRadius(leaves.length) * 2 + 200) : 0;
+    
+    const w = Math.max(hubW, leafW, 150);
+    widthOf.set(id, w);
+    return w;
+  }
+
+  const roots = nodes.filter(n => !parentOf.has(n.id));
+  roots.sort((a, b) => TYPE_ORDER.indexOf(a.computed_type) - TYPE_ORDER.indexOf(b.computed_type));
+  roots.forEach(r => calcWidth(r.id));
+  nodes.forEach(n => { if (!widthOf.has(n.id)) widthOf.set(n.id, 55); });
+
+  // Position recursively
+  function position(id, left, depth) {
+    const node = nodeMap.get(id);
+    if (!node) return;
+
+    const hubs = getHubs(id);
+    const leaves = getLeaves(id);
+    const myW = widthOf.get(id);
+
+    node.y = PAD + depth * LEVEL_H;
+
+    // Position hub children below in a tree row
+    if (hubs.length > 0) {
+      const hubTotalW = hubs.reduce((s, c) => s + widthOf.get(c), 0) + (hubs.length - 1) * 80;
+      let hLeft = left + (myW - hubTotalW) / 2;
+      for (const cid of hubs) {
+        position(cid, hLeft, depth + 1);
+        hLeft += widthOf.get(cid) + 80;
+      }
+      // Center this node over its hub children
+      const first = nodeMap.get(hubs[0]);
+      const last = nodeMap.get(hubs[hubs.length - 1]);
+      node.x = (first.x + last.x) / 2;
+    } else {
+      node.x = left + myW / 2;
+    }
+
+    // Position leaf children radially around this node
+    if (leaves.length > 0) {
+      const R = ringRadius(leaves.length);
+      const cx = node.x;
+      const cy = node.y;
+
+      if (leaves.length === 1) {
+        const ln = nodeMap.get(leaves[0]);
+        if (ln) { ln.x = cx; ln.y = cy + R; }
+      } else {
+        // Always use a full circular distribution around the parent node
+        // Distribute leaves evenly around the parent in a circle
+        const fullCircle = Math.PI * 2;
+        const startAngle = -Math.PI / 2; // Start at the top
+
+        for (let i = 0; i < leaves.length; i++) {
+          const angle = startAngle + (i / leaves.length) * fullCircle;
+          const ln = nodeMap.get(leaves[i]);
+          if (ln) {
+            ln.x = cx + R * Math.cos(angle);
+            ln.y = cy + R * Math.sin(angle);
+          }
+        }
       }
     }
   }
 
-  // Resolve overlaps within each tier
-  tiers.forEach(tier => {
-    if (tier.length < 2) return;
-    tier.sort((a, b) => a.x - b.x);
-    for (let i = 1; i < tier.length; i++) {
-      const minGap = 50;
-      if (tier[i].x - tier[i - 1].x < minGap) {
-        tier[i].x = tier[i - 1].x + minGap;
-      }
-    }
-    // Re-center
-    const actualWidth = tier[tier.length - 1].x - tier[0].x;
-    const shift = (canvasW - actualWidth) / 2 - tier[0].x;
-    tier.forEach(n => { n.x += shift; });
-  });
+  let totalLeft = PAD;
+  for (const root of roots) {
+    position(root.id, totalLeft, 0);
+    // Add MUCH more horizontal space between trees
+    totalLeft += widthOf.get(root.id) + 600;
+  }
 
-  return { canvasW, canvasH };
+  // Ensure no negative positions & compute canvas size
+  let minX = Infinity, maxX = 0, maxY = 0;
+  for (const n of nodes) {
+    if (n.x != null) { minX = Math.min(minX, n.x); maxX = Math.max(maxX, n.x); maxY = Math.max(maxY, n.y); }
+  }
+  if (minX < PAD) {
+    const shift = PAD - minX;
+    nodes.forEach(n => { if (n.x != null) n.x += shift; });
+    maxX += shift;
+  }
+
+  return {
+    canvasW: Math.max(2000, maxX + PAD * 2),
+    canvasH: Math.max(900, maxY + PAD + 100),
+  };
 }
+
+// ── Descendants helper (for subtree dragging) ────────────────
+
+function getDescendantIds(nodeId, edges) {
+  const childrenOf = new Map();
+  for (const e of edges) {
+    if (!childrenOf.has(e.source)) childrenOf.set(e.source, []);
+    childrenOf.get(e.source).push(e.target);
+  }
+  const result = new Set();
+  const queue = [...(childrenOf.get(nodeId) || [])];
+  while (queue.length > 0) {
+    const id = queue.shift();
+    if (result.has(id)) continue;
+    result.add(id);
+    for (const cid of (childrenOf.get(id) || [])) queue.push(cid);
+  }
+  return result;
+}
+
+// ── Component ────────────────────────────────────────────────
 
 function InfraMap() {
   const [topology, setTopology] = useState(null);
@@ -178,7 +265,6 @@ function InfraMap() {
   const [selectedId, setSelectedId] = useState(null);
   const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
   const [dragging, setDragging] = useState(null);
-  const [dragTarget, setDragTarget] = useState(null);
   const [panning, setPanning] = useState(null);
   const [loading, setLoading] = useState(true);
   const [discovering, setDiscovering] = useState(false);
@@ -190,7 +276,7 @@ function InfraMap() {
   const processTopology = useCallback((data, preservePositions = null) => {
     const newNodes = data.hosts.map(h => ({ ...h }));
     const newEdges = computeEdges(newNodes);
-    const { canvasW, canvasH } = layoutHierarchical(newNodes, newEdges, 2000, 900);
+    const { canvasW, canvasH } = layoutTree(newNodes, newEdges);
 
     if (preservePositions) {
       newNodes.forEach(n => {
@@ -258,7 +344,8 @@ function InfraMap() {
     setSelectedId(nodeId);
     const pt = getSvgPoint(e);
     const node = nodes.find(n => n.id === nodeId);
-    setDragging({ id: nodeId, offsetX: pt.x - node.x, offsetY: pt.y - node.y });
+    const descendants = getDescendantIds(nodeId, edges);
+    setDragging({ id: nodeId, offsetX: pt.x - node.x, offsetY: pt.y - node.y, descendants });
   };
 
   const onCanvasMouseDown = (e) => {
@@ -277,35 +364,23 @@ function InfraMap() {
     const nx = pt.x - dragging.offsetX;
     const ny = pt.y - dragging.offsetY;
 
-    setNodes(prev => prev.map(n => n.id === dragging.id ? { ...n, x: nx, y: ny, pinned: true } : n));
-
-    const target = nodes.find(n =>
-      n.id !== dragging.id &&
-      Math.hypot(n.x - nx, n.y - ny) < NODE_R * 2.5
-    );
-    setDragTarget(target ? target.id : null);
+    setNodes(prev => {
+      const current = prev.find(n => n.id === dragging.id);
+      if (!current) return prev;
+      const dx = nx - current.x;
+      const dy = ny - current.y;
+      return prev.map(n => {
+        if (n.id === dragging.id || dragging.descendants.has(n.id)) {
+          return { ...n, x: n.x + dx, y: n.y + dy, pinned: true };
+        }
+        return n;
+      });
+    });
   };
 
-  const onMouseUp = async () => {
+  const onMouseUp = () => {
     if (panning) { setPanning(null); return; }
-    if (dragging && dragTarget) {
-      try {
-        await api.classifyHost(dragging.id, { parent_host_id: dragTarget });
-        const data = await api.getTopology();
-        setTopology(data);
-        setNodes(prev => {
-          const posMap = new Map(prev.map(n => [n.id, { x: n.x, y: n.y, pinned: n.pinned }]));
-          const { newNodes, newEdges, canvasW, canvasH } = processTopology(data, posMap);
-          setEdges(newEdges);
-          setCanvasSize({ w: canvasW, h: canvasH });
-          return newNodes;
-        });
-      } catch (err) {
-        console.error('Parent assignment failed:', err);
-      }
-    }
     setDragging(null);
-    setDragTarget(null);
   };
 
   const zoom = (delta) => {
@@ -331,13 +406,10 @@ function InfraMap() {
       await api.classifyHost(selectedId, data);
       const topo = await api.getTopology();
       setTopology(topo);
-      setNodes(prev => {
-        const posMap = new Map(prev.map(n => [n.id, { x: n.x, y: n.y, pinned: n.pinned }]));
-        const { newNodes, newEdges, canvasW, canvasH } = processTopology(topo, posMap);
-        setEdges(newEdges);
-        setCanvasSize({ w: canvasW, h: canvasH });
-        return newNodes;
-      });
+      const { newNodes, newEdges, canvasW, canvasH } = processTopology(topo);
+      setNodes(newNodes);
+      setEdges(newEdges);
+      setCanvasSize({ w: canvasW, h: canvasH });
     } catch (err) {
       console.error('Classify failed:', err);
     }
@@ -350,14 +422,6 @@ function InfraMap() {
   const deviceTypes = topology?.deviceTypes || [];
   const legendTypes = [...new Set(nodes.map(n => n.computed_type))];
   legendTypes.sort((a, b) => TYPE_ORDER.indexOf(a) - TYPE_ORDER.indexOf(b));
-
-  // Tier labels
-  const tierLabels = ['Netzwerk-Infrastruktur', 'Switches & Access Points', 'Server & Hypervisors', 'Endgeräte & VMs'];
-  const tierYs = [0, 1, 2, 3].map(t => {
-    const nodesInTier = nodes.filter(n => (TIER[n.computed_type] ?? 3) === t);
-    if (nodesInTier.length === 0) return null;
-    return nodesInTier[0].y;
-  });
 
   return (
     <div className="page">
@@ -373,20 +437,16 @@ function InfraMap() {
             setDiscovering(true);
             try {
               await api.runDiscovery();
-              // Poll topology every 5s until discovery finishes (~30s)
               let polls = 0;
               const poll = setInterval(async () => {
                 polls++;
                 try {
                   const data = await api.getTopology();
                   setTopology(data);
-                  setNodes(prev => {
-                    const posMap = new Map(prev.map(n => [n.id, { x: n.x, y: n.y, pinned: n.pinned }]));
-                    const { newNodes, newEdges, canvasW, canvasH } = processTopology(data, posMap);
-                    setEdges(newEdges);
-                    setCanvasSize({ w: canvasW, h: canvasH });
-                    return newNodes;
-                  });
+                  const { newNodes, newEdges, canvasW, canvasH } = processTopology(data);
+                  setNodes(newNodes);
+                  setEdges(newEdges);
+                  setCanvasSize({ w: canvasW, h: canvasH });
                 } catch {}
                 if (polls >= 8) {
                   clearInterval(poll);
@@ -431,22 +491,6 @@ function InfraMap() {
             onWheel={onWheel}
           >
             <g transform={`translate(${transform.x},${transform.y}) scale(${transform.scale})`}>
-              {/* Tier background labels */}
-              {tierYs.map((y, i) => y !== null && (
-                <text key={i} x={30} y={y - 30}
-                  fill="var(--text-muted)" fontSize="13" fontWeight="600" opacity="0.5"
-                  fontFamily="Inter, sans-serif">
-                  {tierLabels[i]}
-                </text>
-              ))}
-
-              {/* Tier separator lines */}
-              {tierYs.map((y, i) => y !== null && i > 0 && (
-                <line key={`sep-${i}`}
-                  x1={20} y1={y - 45} x2={canvasSize.w - 20} y2={y - 45}
-                  stroke="var(--border)" strokeWidth="1" strokeDasharray="6 4" opacity="0.4" />
-              ))}
-
               {/* Edges */}
               {edges.map((e, i) => {
                 const s = nodes.find(n => n.id === e.source);
@@ -454,14 +498,11 @@ function InfraMap() {
                 if (!s || !t) return null;
                 const isHighlighted = selectedId && (e.source === selectedId || e.target === selectedId);
 
-                // Curved edges for better readability
+                // Vertical tree edges: straight down then horizontal
                 const midY = (s.y + t.y) / 2;
-                const dx = t.x - s.x;
-                const curveOffset = Math.abs(dx) > 200 ? dx * 0.1 : 0;
-
                 return (
                   <path key={i}
-                    d={`M ${s.x} ${s.y} Q ${s.x + curveOffset} ${midY} ${t.x} ${t.y}`}
+                    d={`M ${s.x} ${s.y + NODE_R} C ${s.x} ${midY}, ${t.x} ${midY}, ${t.x} ${t.y - NODE_R}`}
                     className={`map-edge ${isHighlighted ? 'highlighted' : ''}`}
                   />
                 );
@@ -472,17 +513,16 @@ function InfraMap() {
                 const Icon = ICON_MAP[n.computed_type] || HelpCircle;
                 const color = TYPE_COLORS[n.computed_type] || '#6b7280';
                 const isSelected = selectedId === n.id;
-                const isDropTarget = dragTarget === n.id;
                 return (
                   <g key={n.id}
-                    className={`map-node ${isSelected ? 'selected' : ''} ${isDropTarget ? 'drag-target' : ''}`}
+                    className={`map-node ${isSelected ? 'selected' : ''}`}
                     onMouseDown={(e) => onMouseDown(e, n.id)}
+                    style={{ cursor: 'grab' }}
                   >
                     <circle cx={n.x} cy={n.y} r={NODE_R}
                       fill="var(--bg-card)"
-                      stroke={isDropTarget ? 'var(--warning)' : n.status === 'up' ? 'var(--success)' : 'var(--danger)'}
+                      stroke={n.status === 'up' ? 'var(--success)' : 'var(--danger)'}
                       strokeWidth={isSelected ? 3 : 2}
-                      strokeDasharray={isDropTarget ? '6 3' : 'none'}
                     />
                     <circle cx={n.x} cy={n.y} r={NODE_R - 5}
                       fill={color} opacity={0.18} />
@@ -621,6 +661,28 @@ function InfraMap() {
                     </div>
                   </div>
                 )}
+                {selected.discovery_info.unifi_client && (
+                  <div className="info-item">
+                    <label>WLAN</label>
+                    <div className="value" style={{ fontSize: 12 }}>
+                      {selected.discovery_info.unifi_client.ssid && <div>SSID: {selected.discovery_info.unifi_client.ssid}</div>}
+                      {selected.discovery_info.unifi_client.signal != null && <div>Signal: {selected.discovery_info.unifi_client.signal} dBm</div>}
+                      {selected.discovery_info.unifi_client.radio && <div>Band: {selected.discovery_info.unifi_client.radio}</div>}
+                      {selected.discovery_info.unifi_client.ap_name && <div>AP: {selected.discovery_info.unifi_client.ap_name}</div>}
+                    </div>
+                  </div>
+                )}
+                {selected.discovery_info.unifi_device && (
+                  <div className="info-item">
+                    <label>UISP</label>
+                    <div className="value" style={{ fontSize: 12 }}>
+                      {selected.discovery_info.unifi_device.name && <div>{selected.discovery_info.unifi_device.name}</div>}
+                      {selected.discovery_info.unifi_device.model && <div>Model: {selected.discovery_info.unifi_device.model}</div>}
+                      {selected.discovery_info.unifi_device.ssid && <div>SSID: {selected.discovery_info.unifi_device.ssid}</div>}
+                      {selected.discovery_info.unifi_device.num_sta != null && <div>Clients: {selected.discovery_info.unifi_device.num_sta}</div>}
+                    </div>
+                  </div>
+                )}
               </>
             )}
 
@@ -655,6 +717,242 @@ function InfraMap() {
                   ))}
               </select>
             </div>
+
+            {(selected.computed_type === 'hypervisor' || selected.device_type === 'hypervisor') && (
+              <>
+                <hr style={{ border: 'none', borderTop: '1px solid var(--border)', margin: '16px 0' }} />
+                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 8 }}>Proxmox API</div>
+                
+                <div className="info-item">
+                  <label>API Host</label>
+                  <input
+                    type="text"
+                    placeholder="https://192.168.1.10:8006"
+                    defaultValue={selected.proxmox_api_host || ''}
+                    onBlur={async (e) => {
+                      if (e.target.value !== (selected.proxmox_api_host || '')) {
+                        try {
+                          await api.updateProxmoxCredentials(selected.id, {
+                            api_host: e.target.value || null,
+                            token_id: selected.proxmox_api_token_id,
+                            token_secret: selected.proxmox_api_token_secret,
+                          });
+                          const topo = await api.getTopology();
+                          setTopology(topo);
+                          const { newNodes, newEdges, canvasW, canvasH } = processTopology(topo);
+                          setNodes(newNodes);
+                          setEdges(newEdges);
+                          setCanvasSize({ w: canvasW, h: canvasH });
+                        } catch (err) {
+                          console.error('Proxmox update failed:', err);
+                          alert('Fehler beim Speichern: ' + err.message);
+                        }
+                      }
+                    }}
+                  />
+                </div>
+
+                <div className="info-item">
+                  <label>Token ID</label>
+                  <input
+                    type="text"
+                    placeholder="root@pam!monitoring"
+                    defaultValue={selected.proxmox_api_token_id || ''}
+                    onBlur={async (e) => {
+                      if (e.target.value !== (selected.proxmox_api_token_id || '')) {
+                        try {
+                          await api.updateProxmoxCredentials(selected.id, {
+                            api_host: selected.proxmox_api_host,
+                            token_id: e.target.value || null,
+                            token_secret: selected.proxmox_api_token_secret,
+                          });
+                          const topo = await api.getTopology();
+                          setTopology(topo);
+                          const { newNodes, newEdges, canvasW, canvasH } = processTopology(topo);
+                          setNodes(newNodes);
+                          setEdges(newEdges);
+                          setCanvasSize({ w: canvasW, h: canvasH });
+                        } catch (err) {
+                          console.error('Proxmox update failed:', err);
+                          alert('Fehler beim Speichern: ' + err.message);
+                        }
+                      }
+                    }}
+                  />
+                </div>
+
+                <div className="info-item">
+                  <label>Token Secret</label>
+                  <input
+                    type="password"
+                    placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                    defaultValue={selected.proxmox_api_token_secret || ''}
+                    onBlur={async (e) => {
+                      if (e.target.value !== (selected.proxmox_api_token_secret || '')) {
+                        try {
+                          await api.updateProxmoxCredentials(selected.id, {
+                            api_host: selected.proxmox_api_host,
+                            token_id: selected.proxmox_api_token_id,
+                            token_secret: e.target.value || null,
+                          });
+                          const topo = await api.getTopology();
+                          setTopology(topo);
+                          const { newNodes, newEdges, canvasW, canvasH } = processTopology(topo);
+                          setNodes(newNodes);
+                          setEdges(newEdges);
+                          setCanvasSize({ w: canvasW, h: canvasH });
+                        } catch (err) {
+                          console.error('Proxmox update failed:', err);
+                          alert('Fehler beim Speichern: ' + err.message);
+                        }
+                      }
+                    }}
+                  />
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                  VMs werden bei Deep Discovery automatisch zugeordnet
+                </div>
+                
+                {selected.proxmox_api_host && selected.proxmox_api_token_id && selected.proxmox_api_token_secret && (
+                  <button
+                    className="btn btn-secondary"
+                    style={{ marginTop: 8, width: '100%' }}
+                    onClick={async () => {
+                      try {
+                        const result = await api.testProxmoxConnection({
+                          api_host: selected.proxmox_api_host,
+                          token_id: selected.proxmox_api_token_id,
+                          token_secret: selected.proxmox_api_token_secret,
+                        });
+                        alert(`✅ Verbindung erfolgreich!\n\nProxmox Version: ${result.version}\n${result.vm_count} VMs gefunden`);
+                      } catch (err) {
+                        alert(`❌ Verbindung fehlgeschlagen:\n\n${err.message}`);
+                      }
+                    }}
+                  >
+                    Verbindung testen
+                  </button>
+                )}
+              </>
+            )}
+
+            {(selected.vendor?.includes('AVM') || selected.discovery_info?.ssdp?.server?.includes('FRITZ!Box')) && (selected.computed_type === 'gateway' || selected.computed_type === 'router' || selected.device_type === 'gateway' || selected.device_type === 'router' || selected.computed_type === 'firewall' || selected.device_type === 'firewall' || selected.computed_type === 'ap' || selected.device_type === 'ap') && (
+              <>
+                <hr style={{ border: 'none', borderTop: '1px solid var(--border)', margin: '16px 0' }} />
+                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 8 }}>FritzBox Zugangsdaten</div>
+                
+                <div className="info-item">
+                  <label>FritzBox Host/URL</label>
+                  <input
+                    type="text"
+                    placeholder="https://fritz.box oder https://192.168.178.1"
+                    defaultValue={selected.fritzbox_host || ''}
+                    onBlur={async (e) => {
+                      if (e.target.value !== (selected.fritzbox_host || '')) {
+                        try {
+                          await api.updateFritzBoxCredentials(selected.id, {
+                            fritzbox_host: e.target.value || null,
+                            fritzbox_username: selected.fritzbox_username,
+                            fritzbox_password: selected.fritzbox_password,
+                          });
+                          const topo = await api.getTopology();
+                          setTopology(topo);
+                          const { newNodes, newEdges, canvasW, canvasH } = processTopology(topo);
+                          setNodes(newNodes);
+                          setEdges(newEdges);
+                          setCanvasSize({ w: canvasW, h: canvasH });
+                        } catch (err) {
+                          console.error('FritzBox update failed:', err);
+                          alert('Fehler beim Speichern: ' + err.message);
+                        }
+                      }
+                    }}
+                  />
+                </div>
+
+                <div className="info-item">
+                  <label>Benutzername</label>
+                  <input
+                    type="text"
+                    placeholder="admin"
+                    defaultValue={selected.fritzbox_username || ''}
+                    onBlur={async (e) => {
+                      if (e.target.value !== (selected.fritzbox_username || '')) {
+                        try {
+                          await api.updateFritzBoxCredentials(selected.id, {
+                            fritzbox_host: selected.fritzbox_host,
+                            fritzbox_username: e.target.value || null,
+                            fritzbox_password: selected.fritzbox_password,
+                          });
+                          const topo = await api.getTopology();
+                          setTopology(topo);
+                          const { newNodes, newEdges, canvasW, canvasH } = processTopology(topo);
+                          setNodes(newNodes);
+                          setEdges(newEdges);
+                          setCanvasSize({ w: canvasW, h: canvasH });
+                        } catch (err) {
+                          console.error('FritzBox update failed:', err);
+                          alert('Fehler beim Speichern: ' + err.message);
+                        }
+                      }
+                    }}
+                  />
+                </div>
+
+                <div className="info-item">
+                  <label>Passwort</label>
+                  <input
+                    type="password"
+                    placeholder="Passwort"
+                    defaultValue={selected.fritzbox_password || ''}
+                    onBlur={async (e) => {
+                      if (e.target.value !== (selected.fritzbox_password || '')) {
+                        try {
+                          await api.updateFritzBoxCredentials(selected.id, {
+                            fritzbox_host: selected.fritzbox_host,
+                            fritzbox_username: selected.fritzbox_username,
+                            fritzbox_password: e.target.value || null,
+                          });
+                          const topo = await api.getTopology();
+                          setTopology(topo);
+                          const { newNodes, newEdges, canvasW, canvasH } = processTopology(topo);
+                          setNodes(newNodes);
+                          setEdges(newEdges);
+                          setCanvasSize({ w: canvasW, h: canvasH });
+                        } catch (err) {
+                          console.error('FritzBox update failed:', err);
+                          alert('Fehler beim Speichern: ' + err.message);
+                        }
+                      }
+                    }}
+                  />
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                  WLAN-Geräte werden bei Deep Discovery automatisch erkannt
+                </div>
+                
+                {selected.fritzbox_host && selected.fritzbox_username && selected.fritzbox_password && (
+                  <button
+                    className="btn btn-secondary"
+                    style={{ marginTop: 8, width: '100%' }}
+                    onClick={async () => {
+                      try {
+                        const result = await api.testFritzBoxConnection({
+                          fritzbox_host: selected.fritzbox_host,
+                          fritzbox_username: selected.fritzbox_username,
+                          fritzbox_password: selected.fritzbox_password,
+                        });
+                        alert(`✅ Verbindung erfolgreich!\n\nModell: ${result.modelName}\nFirmware: ${result.softwareVersion}\nSerial: ${result.serialNumber}\n\nWLAN-Geräte: ${result.wlanDevices?.length || 0}`);
+                      } catch (err) {
+                        alert(`❌ Verbindung fehlgeschlagen:\n\n${err.message}`);
+                      }
+                    }}
+                  >
+                    Verbindung testen
+                  </button>
+                )}
+              </>
+            )}
 
             <button
               className="btn btn-secondary"

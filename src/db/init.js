@@ -105,10 +105,49 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_column THEN NULL;
 END $$;
 
+DO $$ BEGIN
+  ALTER TABLE hosts ADD COLUMN proxmox_api_host VARCHAR(255) DEFAULT NULL;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+DO $$ BEGIN
+  ALTER TABLE hosts ADD COLUMN proxmox_api_token_id VARCHAR(255) DEFAULT NULL;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+DO $$ BEGIN
+  ALTER TABLE hosts ADD COLUMN proxmox_api_token_secret TEXT DEFAULT NULL;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+DO $$ BEGIN
+  ALTER TABLE hosts ADD COLUMN fritzbox_host VARCHAR(255) DEFAULT NULL;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+DO $$ BEGIN
+  ALTER TABLE hosts ADD COLUMN fritzbox_username VARCHAR(255) DEFAULT NULL;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+DO $$ BEGIN
+  ALTER TABLE hosts ADD COLUMN fritzbox_password TEXT DEFAULT NULL;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
 INSERT INTO settings (key, value, description) VALUES
   ('snmp_community', 'public', 'SNMP Community-Strings (kommagetrennt)'),
-  ('deep_discovery_enabled', 'true', 'Deep Discovery aktivieren')
+  ('deep_discovery_enabled', 'true', 'Deep Discovery aktivieren'),
+  ('deep_discovery_interval', '60', 'Deep Discovery Intervall in Minuten')
 ON CONFLICT (key) DO NOTHING;
+
+INSERT INTO settings (key, value, description) VALUES
+  ('unifi_url', '', 'UISP Controller URL'),
+  ('unifi_token', '', 'UISP API Token')
+ON CONFLICT (key) DO NOTHING;
+
+-- Migration: remove old username/password settings if present
+DELETE FROM settings WHERE key IN ('unifi_username', 'unifi_password');
 `;
 
 async function initDatabase() {

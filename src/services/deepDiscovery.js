@@ -3,6 +3,10 @@ const { promisify } = require('util');
 const dgram = require('dgram');
 const settingsModel = require('../models/settings');
 const pool = require('../db/pool');
+const unifiClient = require('./unifiClient');
+const hostsModel = require('../models/hosts');
+const { getVMsFromHost } = require('./proxmoxClient');
+const FritzBoxClient = require('./fritzboxClient');
 
 const execFileP = promisify(execFile);
 
@@ -18,6 +22,8 @@ const execFileP = promisify(execFile);
  * 6. mDNS/Bonjour (service/device enrichment)
  * 7. SSDP/UPnP (device discovery)
  * 8. TTL fingerprinting (hop count estimation)
+ * 9. UniFi Controller (WLAN client→AP mapping)
+ * 10. Proxmox API (VM→Hypervisor mapping via MAC addresses)
  */
 
 // ============================================================
@@ -293,6 +299,52 @@ async function snmpGetLldp(ip, community) {
   return neighbors;
 }
 
+/**
+ * TP-Link EAP wireless station table (enterprise OID .1.3.6.1.4.1.11863.10.1.1.2.1.2)
+ * Returns MACs as hex-encoded ASCII strings that span multiple lines.
+ * We parse the raw output by joining continuation lines before splitting.
+ */
+async function snmpGetTplinkWirelessClients(ip, community) {
+  const OID = '.1.3.6.1.4.1.11863.10.1.1.2.1.2';
+  try {
+    const { stdout } = await execFileP('snmpwalk', [
+      '-v2c', '-c', community, '-t', '3', '-r', '1',
+      '-Oqn', '-Cc', ip, OID,
+    ], { timeout: 10000 });
+
+    // Raw output has multiline hex values. Join continuation lines (lines not starting with .)
+    const joined = stdout.replace(/\n([^.])/g, ' $1');
+    const macs = [];
+
+    for (const line of joined.split('\n')) {
+      if (!line.includes(OID)) continue;
+      // Value is hex bytes representing ASCII chars of the MAC address
+      // e.g. "36 30 2D 30 31 2D 39 34 2D 39 38 2D 43 38 2D 33 43 00 "
+      const hexMatch = line.match(/"([^"]+)"/);
+      if (!hexMatch) continue;
+
+      const hexStr = hexMatch[1].trim();
+      // Convert hex bytes to ASCII, strip null terminator
+      const ascii = hexStr.split(/\s+/)
+        .filter(b => b.length === 2 && b !== '00')
+        .map(b => String.fromCharCode(parseInt(b, 16)))
+        .join('');
+
+      if (!ascii || ascii.length < 11) continue;
+
+      // TP-Link uses dash separators (60-01-94-98-C8-3C), normalize to colon
+      const mac = ascii.replace(/-/g, ':').toLowerCase();
+      if (/^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/.test(mac)) {
+        macs.push(mac);
+      }
+    }
+
+    return macs;
+  } catch {
+    return [];
+  }
+}
+
 async function discoverFromSnmp(hosts, communities, ipToHost) {
   const hints = [];
   const hasSnmp = await commandExists('snmpwalk');
@@ -382,6 +434,26 @@ async function discoverFromSnmp(hosts, communities, ipToHost) {
           method: 'snmp_lldp_neighbor',
           data: nb,
         });
+      }
+
+      // TP-Link EAP wireless station table (vendor-specific MIB)
+      if (/tp-?link|eap\d/i.test(sysDescr)) {
+        const wifiClients = await snmpGetTplinkWirelessClients(host.ip, community);
+        if (wifiClients.length > 0) {
+          console.log(`[DeepDiscovery] SNMP TP-Link WLAN: ${host.ip} → ${wifiClients.length} Clients`);
+          for (const mac of wifiClients) {
+            const child = findHostByMac(ipToHost, mac);
+            if (child && child.ip !== host.ip) {
+              hints.push({
+                childIp: child.ip,
+                parentIp: host.ip,
+                method: 'snmp_tplink_wireless',
+                confidence: 93,
+                detail: `WLAN-Client ${mac} an TP-Link AP`,
+              });
+            }
+          }
+        }
       }
 
       break; // Community string worked, no need to try others
@@ -547,6 +619,369 @@ async function discoverFromTtl(hosts) {
 }
 
 // ============================================================
+// 8. UISP / UniFi (WLAN client → AP mapping)
+// ============================================================
+
+async function discoverFromUnifi(ipToHost) {
+  const hints = [];
+
+  const url = await settingsModel.get('unifi_url');
+  const token = await settingsModel.get('unifi_token');
+
+  if (!url || !token) {
+    console.log('[DeepDiscovery] UISP: Nicht konfiguriert, überspringe');
+    return hints;
+  }
+
+  try {
+    const baseUrl = url.replace(/\/+$/, '');
+    const { devices, stationsByDeviceId } = await unifiClient.getDevicesWithStations(baseUrl, token);
+
+    let totalStations = 0;
+    for (const s of stationsByDeviceId.values()) totalStations += s.length;
+    console.log(`[DeepDiscovery] UISP: ${devices.length} Geräte, ${totalStations} Stationen`);
+
+    // Build device lookup: MAC → { device, host }
+    const deviceByMac = new Map();
+    for (const dev of devices) {
+      if (!dev.mac) continue;
+      const host = findHostByMac(ipToHost, dev.mac);
+      // Also try IP lookup if MAC didn't match
+      const hostByIp = !host && dev.ip ? ipToHost.get(dev.ip) : null;
+      const resolved = host || hostByIp;
+
+      if (resolved) {
+        deviceByMac.set(dev.mac.toLowerCase(), { device: dev, host: resolved });
+
+        // Enrichment hint for the UISP device itself
+        hints.push({
+          ip: resolved.ip,
+          method: 'unifi_device',
+          data: {
+            name: dev.name,
+            model: dev.modelName || dev.model,
+            ssid: dev.ssid,
+            num_sta: dev.stationsCount,
+            firmware: dev.firmware,
+            status: dev.status,
+          },
+        });
+      }
+    }
+
+    // Process stations per device → client → AP mapping
+    for (const dev of devices) {
+      if (!dev.id || !dev.mac) continue;
+      const stations = stationsByDeviceId.get(dev.id) || [];
+      const devEntry = deviceByMac.get(dev.mac.toLowerCase());
+      if (!devEntry) continue;
+      const apHost = devEntry.host;
+
+      for (const station of stations) {
+        // Find the client host by MAC or IP
+        let clientHost = null;
+        if (station.mac) clientHost = findHostByMac(ipToHost, station.mac);
+        if (!clientHost && station.ip) clientHost = ipToHost.get(station.ip);
+        if (!clientHost || clientHost.id === apHost.id) continue;
+
+        // Wireless client → AP relationship
+        hints.push({
+          childIp: clientHost.ip,
+          parentIp: apHost.ip,
+          method: 'unifi_wireless',
+          confidence: 92,
+          detail: `WLAN: ${dev.ssid || 'unbekannt'} (Signal ${station.signal || '?'} dBm)`,
+        });
+
+        // Enrichment hint for the wireless client
+        hints.push({
+          ip: clientHost.ip,
+          method: 'unifi_client',
+          data: {
+            ssid: dev.ssid,
+            signal: station.signal,
+            radio: station.radio,
+            ap_name: dev.name,
+            is_wired: false,
+          },
+        });
+      }
+    }
+
+    console.log(`[DeepDiscovery] UISP: ${hints.filter(h => h.childIp).length} Zuordnungen, ${hints.filter(h => h.ip).length} Enrichments`);
+  } catch (err) {
+    console.error('[DeepDiscovery] UISP Fehler:', err.message);
+  }
+
+  return hints;
+}
+
+// ============================================================
+// Helper: Create host for discovered device
+// ============================================================
+
+async function createOrUpdateHostForDevice(ip, parentId, deviceType = 'device', deviceData = {}) {
+  try {
+    // Check if host already exists
+    const existing = await pool.query('SELECT id FROM hosts WHERE ip_address = $1', [ip]);
+    
+    if (existing.rows.length > 0) {
+      // Update existing with parent relationship if needed
+      if (parentId) {
+        await pool.query(
+          'UPDATE hosts SET parent_host_id = $1, updated_at = NOW() WHERE id = $2',
+          [parentId, existing.rows[0].id]
+        );
+      }
+      return existing.rows[0].id;
+    }
+
+    // Create new host with parent relationship
+    const result = await pool.query(
+      `INSERT INTO hosts (ip_address, parent_host_id, device_type, status, first_seen, last_seen, updated_at)
+       VALUES ($1, $2, $3, $4, NOW(), NOW(), NOW())
+       RETURNING id`,
+      [ip, parentId || null, deviceType, 'unknown']
+    );
+
+    const hostId = result.rows[0].id;
+    console.log(`[DeepDiscovery] Host erstellt: ${ip} mit Parent ${parentId}, Device-Typ: ${deviceType}`);
+    
+    // Update discovery_info if provided
+    if (Object.keys(deviceData).length > 0) {
+      deviceData._createdBy = 'fritzbox_discovery';
+      deviceData._createdAt = new Date().toISOString();
+      await pool.query(
+        'UPDATE hosts SET discovery_info = $1::jsonb WHERE id = $2',
+        [JSON.stringify(deviceData), hostId]
+      );
+    }
+    
+    return hostId;
+  } catch (err) {
+    console.error(`[DeepDiscovery] Fehler beim Erstellen von Host ${ip}:`, err.message);
+    return null;
+  }
+}
+
+// ============================================================
+// 9. AVM FritzBox WLAN Discovery
+// ============================================================
+
+async function discoverFromFritzBox(ipToHost) {
+  const hints = [];
+  
+  try {
+    // Get all hosts with configured FritzBox credentials
+    const fritzboxHosts = await hostsModel.getFritzBoxHosts();
+    
+    if (fritzboxHosts.length === 0) {
+      console.log('[DeepDiscovery] FritzBox: Keine Geräte mit Zugangsdaten konfiguriert');
+      return hints;
+    }
+
+    console.log(`[DeepDiscovery] FritzBox: Abfrage von ${fritzboxHosts.length} FritzBox(en)...`);
+
+    for (const fritzbox of fritzboxHosts) {
+      try {
+        console.log(`[DeepDiscovery] FritzBox: Verbinde mit ${fritzbox.hostname || fritzbox.ip}...`);
+        
+        const client = new FritzBoxClient(
+          fritzbox.fritzbox_host,
+          fritzbox.fritzbox_username,
+          fritzbox.fritzbox_password
+        );
+
+        // Get device info
+        let deviceInfo = {};
+        try {
+          deviceInfo = await client.getDeviceInfo();
+          console.log(`[DeepDiscovery] FritzBox ${fritzbox.hostname || fritzbox.ip}: ${deviceInfo.modelName} (${deviceInfo.softwareVersion})`);
+
+          hints.push({
+            ip: fritzbox.ip,
+            method: 'fritzbox_device',
+            data: {
+              modelName: deviceInfo.modelName,
+              softwareVersion: deviceInfo.softwareVersion,
+              serialNumber: deviceInfo.serialNumber,
+              hardwareVersion: deviceInfo.hardwareVersion,
+            },
+          });
+        } catch (err) {
+          console.error(`[DeepDiscovery] FritzBox ${fritzbox.ip}: getDeviceInfo fehlgeschlagen:`, err.message);
+        }
+
+        // Get WLAN clients
+        try {
+          const wlanClients = await client.getWirelessDevices();
+          console.log(`[DeepDiscovery] FritzBox ${fritzbox.hostname || fritzbox.ip}: ${wlanClients.length} WLAN-Clients gefunden`);
+
+          for (const device of wlanClients) {
+            if (!device.ip || device.ip === fritzbox.ip) continue;
+            
+            // Create host for this WLAN device with FritzBox as parent
+            const wlanHostId = await createOrUpdateHostForDevice(
+              device.ip,
+              fritzbox.id,
+              'device',
+              {
+                mac: device.mac,
+                signalStrength: device.signalStrength,
+                speed: device.speed,
+                isWireless: true,
+                fritzboxIp: fritzbox.ip,
+                fritzboxHostname: fritzbox.hostname,
+              }
+            );
+
+            // Add to ipToHost for relationship processing
+            if (wlanHostId) {
+              ipToHost.set(device.ip, {
+                id: wlanHostId,
+                ip: device.ip,
+                device_type: 'device',
+              });
+
+              // Add relationship hint
+              hints.push({
+                childIp: device.ip,
+                parentIp: fritzbox.ip,
+                method: 'fritzbox_wireless',
+                confidence: 95,
+                detail: `WLAN-Client ${device.mac}, Signal ${device.signalStrength}%`,
+              });
+            }
+          }
+        } catch (err) {
+          console.error(`[DeepDiscovery] FritzBox ${fritzbox.ip}: getWirelessDevices fehlgeschlagen:`, err.message);
+        }
+
+        // Get all hosts (including wired)
+        try {
+          const allHosts = await client.getAllHosts();
+          console.log(`[DeepDiscovery] FritzBox ${fritzbox.hostname || fritzbox.ip}: ${allHosts.length} Hosts insgesamt`);
+
+          for (const device of allHosts) {
+            if (!device.active) continue;
+
+            const connectedDevice = findHostByMac(ipToHost, device.mac);
+            if (connectedDevice && connectedDevice.ip !== fritzbox.ip) {
+              // Determine connection type based on interface
+              const isWired = device.interfaceType === 'Ethernet';
+              const method = isWired ? 'fritzbox_wired' : 'fritzbox_wireless';
+              const confidence = isWired ? 88 : 94;
+
+              // Only add relationship for devices not already connected via SNMP
+              const existingRelations = hints.filter(
+                h => h.childIp === connectedDevice.ip && h.parentIp === fritzbox.ip
+              );
+              if (existingRelations.length === 0) {
+                hints.push({
+                  childIp: connectedDevice.ip,
+                  parentIp: fritzbox.ip,
+                  method: method,
+                  confidence: confidence,
+                  detail: `${isWired ? 'Verkabelt' : 'WLAN'}: ${device.mac}`,
+                });
+              }
+
+              // Enrichment data
+              hints.push({
+                ip: connectedDevice.ip,
+                method: 'fritzbox_connection',
+                data: {
+                  fritzbox_ip: fritzbox.ip,
+                  interface_type: device.interfaceType,
+                  device_hostname: device.hostname,
+                },
+              });
+            }
+          }
+        } catch (err) {
+          console.error(`[DeepDiscovery] FritzBox ${fritzbox.ip}: getAllHosts fehlgeschlagen:`, err.message);
+        }
+
+      } catch (err) {
+        console.error(`[DeepDiscovery] FritzBox-Fehler für ${fritzbox.ip}:`, err.message);
+      }
+    }
+
+  } catch (err) {
+    console.error('[DeepDiscovery] FritzBox-Fehler:', err.message);
+  }
+
+  return hints;
+}
+
+// ============================================================
+// 10. Proxmox Hypervisor Discovery
+// ============================================================
+
+async function discoverFromProxmox(ipToHost) {
+  const hints = [];
+  
+  try {
+    // Get all hypervisors with configured Proxmox credentials
+    const proxmoxHosts = await hostsModel.getProxmoxHosts();
+    
+    if (proxmoxHosts.length === 0) {
+      console.log('[DeepDiscovery] Proxmox: Keine Hypervisoren mit API-Credentials konfiguriert');
+      return hints;
+    }
+
+    console.log(`[DeepDiscovery] Proxmox: Abfrage von ${proxmoxHosts.length} Hypervisor(n)...`);
+
+    for (const hypervisor of proxmoxHosts) {
+      try {
+        console.log(`[DeepDiscovery] Proxmox: Verbinde mit ${hypervisor.hostname || hypervisor.ip} (${hypervisor.proxmox_api_host})...`);
+        
+        const vms = await getVMsFromHost(
+          hypervisor.proxmox_api_host,
+          hypervisor.proxmox_api_token_id,
+          hypervisor.proxmox_api_token_secret
+        );
+
+        console.log(`[DeepDiscovery] Proxmox ${hypervisor.hostname || hypervisor.ip}: ${vms.length} VMs gefunden`);
+
+        for (const vm of vms) {
+          if (vm.macs.length === 0) {
+            console.log(`[DeepDiscovery] Proxmox VM ${vm.name} (${vm.vmid}): Keine MAC-Adressen gefunden`);
+            continue;
+          }
+          
+          // For each MAC address of this VM, try to find the corresponding host
+          for (const mac of vm.macs) {
+            const vmHost = findHostByMac(ipToHost, mac);
+            if (vmHost && vmHost.id !== hypervisor.id) {
+              console.log(`[DeepDiscovery] Proxmox: VM ${vm.name} (${mac}) → Host ${vmHost.ip}`);
+              hints.push({
+                childIp: vmHost.ip,
+                parentIp: hypervisor.ip,
+                method: 'proxmox_api',
+                confidence: 98,
+                detail: `Proxmox VM: ${vm.name} (VMID ${vm.vmid}, MAC ${mac})`,
+              });
+            } else if (!vmHost) {
+              console.log(`[DeepDiscovery] Proxmox: VM ${vm.name} (${mac}) nicht im Netzwerk gefunden`);
+            }
+          }
+        }
+      } catch (err) {
+        console.error(`[DeepDiscovery] Proxmox-Fehler für ${hypervisor.hostname || hypervisor.ip}:`, err.message);
+        console.error(`[DeepDiscovery] Proxmox-Stack:`, err.stack);
+      }
+    }
+
+    console.log(`[DeepDiscovery] Proxmox: ${hints.length} VM-Zuordnungen`);
+  } catch (err) {
+    console.error('[DeepDiscovery] Proxmox Fehler:', err.message);
+  }
+
+  return hints;
+}
+
+// ============================================================
 // Merge & Apply Hints
 // ============================================================
 
@@ -698,9 +1133,12 @@ async function runDeepDiscovery(topologyHosts, network) {
     discoverFromMdns(ipToHost),
     discoverFromSsdp(ipToHost),
     discoverFromTtl(topologyHosts),
+    discoverFromUnifi(ipToHost),
+    discoverFromFritzBox(ipToHost),
+    discoverFromProxmox(ipToHost),
   ]);
 
-  const methodNames = ['ARP', 'Traceroute', 'Ping-Clustering', 'SNMP', 'mDNS', 'SSDP', 'TTL'];
+  const methodNames = ['ARP', 'Traceroute', 'Ping-Clustering', 'SNMP', 'mDNS', 'SSDP', 'TTL', 'UniFi', 'FritzBox', 'Proxmox'];
   const allHints = [];
 
   for (let i = 0; i < results.length; i++) {

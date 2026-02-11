@@ -52,6 +52,12 @@ async function getTopology() {
       parent_host_id: row.parent_host_id,
       discovery_info: row.discovery_info || null,
       service_count: services.length,
+      proxmox_api_host: row.proxmox_api_host,
+      proxmox_api_token_id: row.proxmox_api_token_id,
+      proxmox_api_token_secret: row.proxmox_api_token_secret,
+      fritzbox_host: row.fritzbox_host,
+      fritzbox_username: row.fritzbox_username,
+      fritzbox_password: row.fritzbox_password,
     };
   });
 

@@ -35,4 +35,29 @@ export const api = {
     }),
   getDeviceTypes: () => fetchJson('/device-types'),
   runDiscovery: () => fetchJson('/discovery/run', { method: 'POST' }),
+  testUnifi: (url, token) =>
+    fetchJson('/unifi/test', {
+      method: 'POST',
+      body: JSON.stringify({ url, token }),
+    }),
+  updateProxmoxCredentials: (id, credentials) =>
+    fetchJson(`/hosts/${id}/proxmox`, {
+      method: 'PUT',
+      body: JSON.stringify(credentials),
+    }),
+  testProxmoxConnection: (credentials) =>
+    fetchJson('/proxmox/test', {
+      method: 'POST',
+      body: JSON.stringify(credentials),
+    }),
+  updateFritzBoxCredentials: (id, credentials) =>
+    fetchJson(`/hosts/${id}/fritzbox`, {
+      method: 'PUT',
+      body: JSON.stringify(credentials),
+    }),
+  testFritzBoxConnection: (credentials) =>
+    fetchJson('/fritzbox/test', {
+      method: 'POST',
+      body: JSON.stringify(credentials),
+    }),
 };

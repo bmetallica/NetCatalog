@@ -10,10 +10,15 @@ const { runDeepDiscovery } = require('./deepDiscovery');
 const topologyModel = require('../models/topology');
 
 let scanning = false;
+let discoveryRunning = false;
 let currentScanId = null;
 
 function isScanning() {
   return scanning;
+}
+
+function isDiscoveryRunning() {
+  return discoveryRunning;
 }
 
 function getCurrentScanId() {
@@ -375,13 +380,18 @@ async function runScan() {
       }
     }
 
-    // Phase 3: Deep Discovery (topology enrichment)
-    try {
-      const topology = await topologyModel.getTopology();
-      const discoveryResult = await runDeepDiscovery(topology.hosts, network);
-      console.log(`[Scanner] Phase 3 complete: ${discoveryResult.applied} topology relationships discovered`);
-    } catch (err) {
-      console.error(`[Scanner] Deep Discovery error (non-fatal): ${err.message}`);
+    // Phase 3: Deep Discovery (topology enrichment) - only if enabled
+    const deepDiscoveryEnabled = (await settingsModel.get('deep_discovery_enabled')) !== 'false';
+    if (deepDiscoveryEnabled) {
+      try {
+        const topology = await topologyModel.getTopology();
+        const discoveryResult = await runDeepDiscovery(topology.hosts, network);
+        console.log(`[Scanner] Phase 3 complete: ${discoveryResult.applied} topology relationships discovered`);
+      } catch (err) {
+        console.error(`[Scanner] Deep Discovery error (non-fatal): ${err.message}`);
+      }
+    } else {
+      console.log('[Scanner] Deep Discovery disabled, skipping Phase 3');
     }
 
     await scansModel.finish(scanRecord.id, allAliveIps.size, totalServices, null);
@@ -400,4 +410,26 @@ async function runScan() {
   }
 }
 
-module.exports = { runScan, isScanning, getCurrentScanId };
+async function runDeepDiscoveryStandalone() {
+  if (discoveryRunning) {
+    throw new Error('Deep Discovery is already running');
+  }
+
+  discoveryRunning = true;
+  console.log('[DeepDiscovery] === Standalone Deep Discovery triggered ===');
+
+  try {
+    const network = await settingsModel.get('scan_network') || '192.168.66.0/24';
+    const topology = await topologyModel.getTopology();
+    const result = await runDeepDiscovery(topology.hosts, network);
+    console.log(`[DeepDiscovery] === Standalone complete: ${result.applied} relationships ===`);
+    return result;
+  } catch (err) {
+    console.error('[DeepDiscovery] Standalone error:', err.message);
+    throw err;
+  } finally {
+    discoveryRunning = false;
+  }
+}
+
+module.exports = { runScan, isScanning, getCurrentScanId, runDeepDiscoveryStandalone, isDiscoveryRunning };
