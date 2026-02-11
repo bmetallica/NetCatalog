@@ -219,7 +219,10 @@ async function snmpGet(ip, community, oid) {
 async function snmpWalk(ip, community, oid) {
   try {
     const { stdout } = await execFileP('snmpwalk', [
-      '-v2c', '-c', community, '-t', '3', '-r', '1', '-Oqn', ip, oid,
+      '-v2c', '-c', community, '-t', '3', '-r', '1',
+      '-Oqn',  // quiet, numeric OIDs
+      '-Cc',   // tolerate non-increasing OIDs (older switches like HP 1920G)
+      ip, oid,
     ], { timeout: 20000 });
     return stdout.trim().split('\n').filter(Boolean).map(line => {
       const idx = line.indexOf(' ');
@@ -340,6 +343,12 @@ async function discoverFromSnmp(hosts, communities, ipToHost) {
       if (macTable.length > 0) {
         console.log(`[DeepDiscovery] SNMP MAC-Tabelle: ${host.ip} → ${macTable.length} Einträge`);
 
+        // Count MACs per port to detect uplink vs edge ports
+        const portMacCount = {};
+        for (const e of macTable) {
+          portMacCount[e.port] = (portMacCount[e.port] || 0) + 1;
+        }
+
         for (const entry of macTable) {
           const child = findHostByMac(ipToHost, entry.mac);
           if (child && child.ip !== host.ip) {
@@ -348,6 +357,8 @@ async function discoverFromSnmp(hosts, communities, ipToHost) {
               parentIp: host.ip,
               method: 'snmp_mac_table',
               confidence: 90,
+              switchPort: entry.port,
+              portMacCount: portMacCount[entry.port] || 1,
               detail: `MAC ${entry.mac} auf Port ${entry.port} (${entry.ifDescr})`,
             });
           }
@@ -540,10 +551,35 @@ async function discoverFromTtl(hosts) {
 // ============================================================
 
 async function applyHints(hints, ipToHost) {
-  // 1. Collect relationship hints → pick highest confidence per child
-  const relationships = hints.filter(h => h.childIp && h.parentIp);
+  // 1. Smart parent selection using port-MAC-count analysis
+  //    When multiple switches see the same MAC, the switch where
+  //    the MAC is on a port with FEWER MACs is the "closer" switch.
+  //    Uplink/trunk ports have many MACs, edge ports have 1-3.
+  const snmpHints = hints.filter(h => h.method === 'snmp_mac_table' && h.childIp && h.parentIp);
+  const otherRels = hints.filter(h => h.childIp && h.parentIp && h.method !== 'snmp_mac_table');
+
+  // Group SNMP hints by child → list of {parentIp, portMacCount, ...}
+  const childSwitchOptions = new Map();
+  for (const h of snmpHints) {
+    if (!childSwitchOptions.has(h.childIp)) childSwitchOptions.set(h.childIp, []);
+    childSwitchOptions.get(h.childIp).push(h);
+  }
+
+  // For each child, pick the switch with the lowest portMacCount (= closest)
   const bestParent = new Map();
-  for (const rel of relationships) {
+  for (const [childIp, options] of childSwitchOptions) {
+    // Sort by portMacCount ascending → switch with fewest MACs on that port wins
+    options.sort((a, b) => (a.portMacCount || 999) - (b.portMacCount || 999));
+    const best = options[0];
+    bestParent.set(childIp, {
+      ...best,
+      confidence: best.portMacCount <= 3 ? 95 : best.portMacCount <= 10 ? 85 : 75,
+    });
+  }
+
+  // Layer non-SNMP relationship hints (traceroute, LLDP etc.)
+  // These override SNMP only if confidence is higher
+  for (const rel of otherRels) {
     const existing = bestParent.get(rel.childIp);
     if (!existing || rel.confidence > existing.confidence) {
       bestParent.set(rel.childIp, rel);
@@ -566,39 +602,44 @@ async function applyHints(hints, ipToHost) {
   }
 
   let applied = 0;
+  const infraTypes = ['gateway', 'router', 'firewall', 'switch', 'ap', 'management', 'hypervisor'];
 
-  // 3. Apply parent relationships (only where parent_host_id is NULL)
-  // But skip VMs: they should stay attached to their hypervisor via the classifier,
-  // not be reassigned to a switch just because the switch has their MAC.
+  // 3. First: reset auto-discovered parents so we can reassign optimally
+  //    Only reset hosts without manual device_type (= never touched by user)
+  await pool.query(
+    `UPDATE hosts SET parent_host_id = NULL
+     WHERE parent_host_id IS NOT NULL AND device_type IS NULL`
+  );
+
+  // 4. Apply parent relationships
   for (const [childIp, rel] of bestParent) {
     const child = ipToHost.get(childIp);
     const parent = ipToHost.get(rel.parentIp);
     if (!child || !parent || child.id === parent.id) continue;
 
-    // Skip VMs being assigned to switches — VMs belong to hypervisors
     const childType = child.computed_type || child.device_type;
     const parentType = parent.computed_type || parent.device_type;
+
+    // Skip VMs → they belong to hypervisors, not switches
     if (childType === 'vm' && ['switch', 'ap', 'gateway', 'router'].includes(parentType)) {
       continue;
     }
 
-    // Skip infrastructure devices being reassigned to peers
-    const infraTypes = ['gateway', 'router', 'firewall', 'switch', 'ap', 'management', 'hypervisor'];
+    // Skip infra-to-switch assignments (they are physical peers, not logical children)
     if (infraTypes.includes(childType) && parentType === 'switch' && rel.method === 'snmp_mac_table') {
-      // Infra devices connect to switches physically, but logically they are peers
-      // Only set parent if child is a non-infra device
       continue;
     }
 
     try {
       const res = await pool.query(
         `UPDATE hosts SET parent_host_id = $1, updated_at = NOW()
-         WHERE id = $2 AND parent_host_id IS NULL`,
+         WHERE id = $2 AND device_type IS NULL`,
         [parent.id, child.id]
       );
       if (res.rowCount > 0) {
         applied++;
-        console.log(`[DeepDiscovery] Zuordnung: ${childIp} → ${rel.parentIp} (${rel.method}, ${rel.confidence}%)`);
+        const portInfo = rel.portMacCount ? ` [Port: ${rel.portMacCount} MACs]` : '';
+        console.log(`[DeepDiscovery] Zuordnung: ${childIp} → ${rel.parentIp} (${rel.method}, ${rel.confidence}%)${portInfo}`);
       }
     } catch (err) {
       console.error(`[DeepDiscovery] DB-Fehler bei Parent-Zuordnung: ${err.message}`);
