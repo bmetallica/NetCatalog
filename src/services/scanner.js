@@ -116,11 +116,26 @@ function runPingSweep(network) {
       maxBuffer: 10 * 1024 * 1024,
       timeout: 120000, // 2 minutes
     }, (err, stdout, stderr) => {
-      if (err && !stdout) {
-        reject(new Error(`Ping sweep failed: ${err.message}`));
+      // Always log errors
+      if (err) {
+        console.log(`[Scanner] Phase 0 nmap error: ${err.message} (timeout=${err.killed})`);
+        if (stderr) console.log(`[Scanner] stderr: ${stderr.substring(0, 300)}`);
+      }
+      
+      // Validate XML output
+      if (!stdout || !stdout.includes('<?xml') || stdout.trim().length < 50) {
+        console.log(`[Scanner] Phase 0 invalid output: ${stdout?.length || 0} bytes`);
+        reject(new Error(`Ping sweep produced invalid output`));
         return;
       }
-      resolve(stdout);
+      
+      // Accept if it looks like valid XML
+      if (stdout.includes('</nmaprun>') || stdout.includes('<nmaprun')) {
+        resolve(stdout);
+        return;
+      }
+      
+      reject(new Error(`Ping sweep failed: ${err?.message || 'Invalid output'}`));
     });
   });
 }
@@ -129,10 +144,17 @@ function runPingSweep(network) {
  * Parse ping sweep XML to get set of alive IPs with MAC/vendor/hostname info
  */
 async function parsePingSweep(xml) {
-  const result = await parseStringPromise(xml, { explicitArray: false });
-  const alive = new Map(); // ip -> { mac, vendor, hostname }
+  try {
+    // Log if XML is suspiciously short
+    if (!xml || xml.trim().length < 50) {
+      console.log(`[Scanner] Phase 0 XML too short: ${xml?.length || 0} bytes`);
+      return new Map();
+    }
 
-  if (!result.nmaprun || !result.nmaprun.host) return alive;
+    const result = await parseStringPromise(xml, { explicitArray: false });
+    const alive = new Map(); // ip -> { mac, vendor, hostname }
+
+    if (!result.nmaprun || !result.nmaprun.host) return alive;
 
   const rawHosts = Array.isArray(result.nmaprun.host)
     ? result.nmaprun.host
@@ -161,6 +183,10 @@ async function parsePingSweep(xml) {
   }
 
   return alive;
+  } catch (err) {
+    console.error(`[Scanner] Error parsing Phase 0 XML: ${err.message}`);
+    return new Map();
+  }
 }
 
 /**
@@ -190,11 +216,29 @@ function runNmapDiscovery(network, portRange) {
       maxBuffer: 50 * 1024 * 1024,
       timeout: 1800000, // 30 minutes - sufficient for 100+ hosts at 90s per host
     }, (err, stdout, stderr) => {
-      if (err && !stdout) {
-        reject(new Error(`nmap failed: ${err.message}`));
+      // Always log error if present
+      if (err) {
+        console.log(`[Scanner] nmap error: ${err.message} (timeout=${err.killed}, signal=${err.signal})`);
+        if (stderr) {
+          console.log(`[Scanner] nmap stderr: ${stderr.substring(0, 500)}`);
+        }
+      }
+      
+      // Check if output is valid XML
+      if (!stdout || !stdout.includes('<?xml') || stdout.trim().length < 100) {
+        console.log(`[Scanner] nmap returned invalid/empty output: ${stdout?.length || 0} bytes`);
+        reject(new Error(`nmap produced invalid output`));
         return;
       }
-      resolve(stdout);
+      
+      // If we have valid-looking XML, accept it even if there was a timeout
+      if (stdout.includes('</nmaprun>') || stdout.includes('<?xml')) {
+        resolve(stdout);
+        return;
+      }
+      
+      // Otherwise reject
+      reject(new Error(`nmap failed: ${err?.message || 'Invalid output'}`));
     });
   });
 }
@@ -205,6 +249,13 @@ function runNmapDiscovery(network, portRange) {
  */
 async function parseNmapOutput(xml) {
   try {
+    // Log if XML is suspiciously short or empty
+    if (!xml || xml.trim().length < 100) {
+      console.log(`[Scanner] Warning: Very short nmap output (${xml?.length || 0} bytes)`);
+      console.log(`[Scanner] Output start: ${xml?.substring(0, 200) || 'EMPTY'}`);
+      return [];
+    }
+
     // Check if XML is complete, if not try to fix it
     if (!xml.includes('</nmaprun>')) {
       console.log(`[Scanner] Warning: Incomplete nmap XML detected, attempting repair...`);
