@@ -367,11 +367,14 @@ async function runScan() {
     
     if (hostsNotInScan.length > 0) {
       console.log(`[Scanner] Phase 1.5 - Checking ${hostsNotInScan.length} hosts not found in nmap scan...`);
+      console.log(`[Scanner] Phase 1.5 - Hosts to check: ${hostsNotInScan.map(h => h.ip).join(', ')}`);
       const checkTasks = hostsNotInScan.map(h => async () => {
         const isAlive = await checkHostAlive(h.ip);
         if (isAlive) {
           console.log(`[Scanner]   ${h.ip} is alive (port/ping check)`);
           allAliveIps.add(h.ip);
+        } else {
+          console.log(`[Scanner]   ${h.ip} is dead (not responding to TCP/ICMP)`);
         }
         return { ip: h.ip, isAlive };
       });
