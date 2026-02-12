@@ -201,12 +201,25 @@ function runNmapDiscovery(network, portRange) {
 
 /**
  * Parse nmap XML output into structured host/port data
+ * Handles incomplete XML by attempting repair
  */
 async function parseNmapOutput(xml) {
-  const result = await parseStringPromise(xml, { explicitArray: false });
-  const hosts = [];
+  try {
+    // Check if XML is complete, if not try to fix it
+    if (!xml.includes('</nmaprun>')) {
+      console.log(`[Scanner] Warning: Incomplete nmap XML detected, attempting repair...`);
+      // Ensure XML ends properly
+      if (xml.trim().endsWith('>')) {
+        xml = xml + '</nmaprun>';
+      } else {
+        xml = xml.trimRight() + '\n</nmaprun>';
+      }
+    }
 
-  if (!result.nmaprun || !result.nmaprun.host) return hosts;
+    const result = await parseStringPromise(xml, { explicitArray: false });
+    const hosts = [];
+
+    if (!result.nmaprun || !result.nmaprun.host) return hosts;
 
   const rawHosts = Array.isArray(result.nmaprun.host)
     ? result.nmaprun.host
@@ -270,6 +283,11 @@ async function parseNmapOutput(xml) {
   }
 
   return hosts;
+  } catch (err) {
+    console.error(`[Scanner] Error parsing nmap XML: ${err.message}`);
+    // Return empty array if parsing fails completely
+    return [];
+  }
 }
 
 /**
