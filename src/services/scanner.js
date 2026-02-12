@@ -179,7 +179,7 @@ function runNmapDiscovery(network, portRange) {
       '--open',              // Only show open ports
       '-oX', '-',            // XML output to stdout
       '--max-retries', '3',  // More retries for reliability
-      '--host-timeout', '300s',
+      '--host-timeout', '90s',  // Timeout per host (reduced from 300s for faster scans)
       '--min-rate', '200',   // Moderate min rate
       network,
     ];
@@ -188,7 +188,7 @@ function runNmapDiscovery(network, portRange) {
 
     execFile('nmap', args, {
       maxBuffer: 50 * 1024 * 1024,
-      timeout: 900000, // 15 minutes
+      timeout: 1800000, // 30 minutes - sufficient for 100+ hosts at 90s per host
     }, (err, stdout, stderr) => {
       if (err && !stdout) {
         reject(new Error(`nmap failed: ${err.message}`));
@@ -359,8 +359,11 @@ async function runScan() {
 
     // Phase 1.5: Ping hosts that weren't found in nmap sweep
     // (e.g., WLAN devices discovered via FritzBox, hosts outside main scan network)
+    console.log(`[Scanner] === Starting Phase 1.5 ===`);
     const existingHosts = await hostsModel.getAllIds();
+    console.log(`[Scanner] Phase 1.5: Found ${existingHosts.length} total hosts in database`);
     const hostsNotInScan = existingHosts.filter(h => !allAliveIps.has(h.ip));
+    console.log(`[Scanner] Phase 1.5: ${hostsNotInScan.length} hosts NOT found in nmap scan`);
     
     if (hostsNotInScan.length > 0) {
       console.log(`[Scanner] Phase 1.5 - Checking ${hostsNotInScan.length} hosts not found in nmap scan...`);
