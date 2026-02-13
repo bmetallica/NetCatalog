@@ -418,7 +418,7 @@ Wants=postgresql.service
 
 [Service]
 Type=simple
-User=$DB_USER
+User=root
 WorkingDirectory=$install_dir
 Environment="NODE_ENV=production"
 EnvironmentFile=$install_dir/.env
