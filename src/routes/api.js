@@ -378,6 +378,26 @@ router.post('/fritzbox/test', async (req, res) => {
   }
 });
 
+// Test Proxmox connection
+router.post('/proxmox/test', async (req, res) => {
+  const { api_host, token_id, token_secret } = req.body || {};
+  if (!api_host || !token_id || !token_secret) {
+    return res.status(400).json({ error: 'api_host, token_id und token_secret erforderlich' });
+  }
+  if (!/^https?:\/\/.+/.test(api_host)) {
+    return res.status(400).json({ error: 'api_host muss eine gültige URL sein (z.B. https://proxmox:8006)' });
+  }
+  try {
+    const { testProxmoxConnection, getVMsFromHost } = require('../services/proxmoxClient');
+    const result = await testProxmoxConnection(api_host, token_id, token_secret);
+
+    let vms = [];
+    try {
+      vms = await getVMsFromHost(api_host, token_id, token_secret);
+    } catch (err) {
+      console.log('[Proxmox] Could not fetch VMs during test:', err.message);
+    
+
 // Debug endpoint to check FritzBox configuration
 router.get('/debug/fritzbox-hosts', async (req, res) => {
   try {
