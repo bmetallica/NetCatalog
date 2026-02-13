@@ -388,15 +388,61 @@ router.post('/proxmox/test', async (req, res) => {
     return res.status(400).json({ error: 'api_host muss eine gültige URL sein (z.B. https://proxmox:8006)' });
   }
   try {
-    const { testProxmoxConnection, getVMsFromHost } = require('../services/proxmoxClient');
+    const { testProxmoxConnection, getVMsFromHost, getNodeAddressMap } = require('../services/proxmoxClient');
     const result = await testProxmoxConnection(api_host, token_id, token_secret);
 
     let vms = [];
+    let nodeMap = new Map();
     try {
       vms = await getVMsFromHost(api_host, token_id, token_secret);
+      try {
+        nodeMap = await getNodeAddressMap(api_host, token_id, token_secret);
+      } catch {}
+
+      try {
+        const url = new URL(api_host);
+        const hostKey = url.hostname.toLowerCase();
+        const shortKey = hostKey.split('.')[0];
+        let nodeNameForHost = null;
+
+        for (const [nodeName, nodeIps] of nodeMap.entries()) {
+          const nodeKey = String(nodeName || '').toLowerCase();
+          if (nodeKey === hostKey || nodeKey === shortKey) {
+            nodeNameForHost = nodeName;
+            break;
+          }
+          if (Array.isArray(nodeIps)) {
+            for (const nodeIp of nodeIps) {
+              if (nodeIp && (nodeIp === hostKey || nodeIp === shortKey)) {
+                nodeNameForHost = nodeName;
+                break;
+              }
+            }
+          }
+          if (nodeNameForHost) break;
+        }
+
+        if (nodeNameForHost) {
+          const nodeKey = String(nodeNameForHost).toLowerCase();
+          vms = vms.filter(vm => {
+            if (!vm.node) return true;
+            return String(vm.node).toLowerCase() === nodeKey;
+          });
+        }
+      } catch {}
     } catch (err) {
       console.log('[Proxmox] Could not fetch VMs during test:', err.message);
-    
+    }
+
+    res.json({
+      ...result,
+      vm_count: vms.length,
+      vms: vms.slice(0, 5),
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
 
 // Debug endpoint to check FritzBox configuration
 router.get('/debug/fritzbox-hosts', async (req, res) => {

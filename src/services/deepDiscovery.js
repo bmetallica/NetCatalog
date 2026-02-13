@@ -5,7 +5,7 @@ const settingsModel = require('../models/settings');
 const pool = require('../db/pool');
 const unifiClient = require('./unifiClient');
 const hostsModel = require('../models/hosts');
-const { getVMsFromHost } = require('./proxmoxClient');
+const { getVMsFromHost, getNodeAddressMap } = require('./proxmoxClient');
 const FritzBoxClient = require('./fritzboxClient');
 
 const execFileP = promisify(execFile);
@@ -66,6 +66,44 @@ function findHostByMac(ipToHost, mac) {
     if (host.mac_address && host.mac_address.toLowerCase() === norm) return host;
   }
   return null;
+}
+
+function findHostByNodeName(ipToHost, nodeName) {
+  if (!nodeName) return null;
+  const norm = String(nodeName).toLowerCase();
+  for (const host of ipToHost.values()) {
+    if (!host) continue;
+    if (host.hostname && String(host.hostname).toLowerCase() === norm) return host;
+    if (host.hostname && String(host.hostname).toLowerCase().startsWith(`${norm}.`)) return host;
+    if (host.ip && String(host.ip).toLowerCase() === norm) return host;
+  }
+  return null;
+}
+
+function normalizeNodeName(name) {
+  if (!name) return [];
+  const norm = String(name).toLowerCase().trim();
+  if (!norm) return [];
+  const short = norm.split('.')[0];
+  return short && short !== norm ? [norm, short] : [norm];
+}
+
+function buildProxmoxNodeIndex(proxmoxHosts) {
+  const index = new Map();
+  for (const host of proxmoxHosts) {
+    const keys = new Set();
+    for (const k of normalizeNodeName(host.hostname)) keys.add(k);
+    if (host.proxmox_api_host) {
+      try {
+        const url = new URL(host.proxmox_api_host);
+        for (const k of normalizeNodeName(url.hostname)) keys.add(k);
+      } catch {}
+    }
+    for (const key of keys) {
+      if (!index.has(key)) index.set(key, host);
+    }
+  }
+  return index;
 }
 
 // ============================================================
@@ -932,9 +970,34 @@ async function discoverFromProxmox(ipToHost) {
 
     console.log(`[DeepDiscovery] Proxmox: Abfrage von ${proxmoxHosts.length} Hypervisor(n)...`);
 
+    const nodeIndex = buildProxmoxNodeIndex(proxmoxHosts);
+
     for (const hypervisor of proxmoxHosts) {
       try {
         console.log(`[DeepDiscovery] Proxmox: Verbinde mit ${hypervisor.hostname || hypervisor.ip} (${hypervisor.proxmox_api_host})...`);
+
+        let nodeAddressMap = new Map();
+        try {
+          nodeAddressMap = await getNodeAddressMap(
+            hypervisor.proxmox_api_host,
+            hypervisor.proxmox_api_token_id,
+            hypervisor.proxmox_api_token_secret
+          );
+          for (const [nodeName, nodeIps] of nodeAddressMap.entries()) {
+            if (!nodeName) continue;
+            if (Array.isArray(nodeIps)) {
+              for (const nodeIp of nodeIps) {
+                const host = nodeIp ? ipToHost.get(nodeIp) : null;
+                if (host) {
+                  nodeIndex.set(String(nodeName).toLowerCase(), host);
+                  nodeIndex.set(String(nodeName).toLowerCase().split('.')[0], host);
+                }
+              }
+            }
+          }
+        } catch (err) {
+          console.log('[DeepDiscovery] Proxmox: Node-IP Mapping nicht verfügbar:', err.message);
+        }
         
         const vms = await getVMsFromHost(
           hypervisor.proxmox_api_host,
@@ -950,17 +1013,41 @@ async function discoverFromProxmox(ipToHost) {
             continue;
           }
           
+          // Avoid duplicate VM hints in clustered setups by assigning each VM to its node owner
+          const nodeKeys = normalizeNodeName(vm.node);
+          let ownerByIndex = nodeKeys.map(k => nodeIndex.get(k)).find(Boolean) || null;
+          if (!ownerByIndex && nodeAddressMap.size > 0) {
+            for (const key of nodeKeys) {
+              for (const [nodeName, nodeIps] of nodeAddressMap.entries()) {
+                if (String(nodeName).toLowerCase() === key && Array.isArray(nodeIps)) {
+                  for (const nodeIp of nodeIps) {
+                    if (nodeIp && ipToHost.has(nodeIp)) {
+                      ownerByIndex = ipToHost.get(nodeIp);
+                      break;
+                    }
+                  }
+                }
+                if (ownerByIndex) break;
+              }
+              if (ownerByIndex) break;
+            }
+          }
+          if (ownerByIndex && ownerByIndex.id !== hypervisor.id) {
+            continue;
+          }
+
           // For each MAC address of this VM, try to find the corresponding host
+          const nodeHost = findHostByNodeName(ipToHost, vm.node) || ownerByIndex || hypervisor;
           for (const mac of vm.macs) {
             const vmHost = findHostByMac(ipToHost, mac);
-            if (vmHost && vmHost.id !== hypervisor.id) {
-              console.log(`[DeepDiscovery] Proxmox: VM ${vm.name} (${mac}) → Host ${vmHost.ip}`);
+            if (vmHost && nodeHost && vmHost.id !== nodeHost.id) {
+              console.log(`[DeepDiscovery] Proxmox: VM ${vm.name} (${mac}) → Host ${vmHost.ip} (Node ${vm.node})`);
               hints.push({
                 childIp: vmHost.ip,
-                parentIp: hypervisor.ip,
+                parentIp: nodeHost.ip,
                 method: 'proxmox_api',
                 confidence: 98,
-                detail: `Proxmox VM: ${vm.name} (VMID ${vm.vmid}, MAC ${mac})`,
+                detail: `Proxmox VM: ${vm.name} (VMID ${vm.vmid}, Node ${vm.node}, MAC ${mac})`,
               });
             } else if (!vmHost) {
               console.log(`[DeepDiscovery] Proxmox: VM ${vm.name} (${mac}) nicht im Netzwerk gefunden`);

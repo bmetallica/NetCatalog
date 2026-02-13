@@ -211,6 +211,47 @@ class ProxmoxClient {
       throw new Error(`Proxmox connection failed: ${err.message}`);
     }
   }
+
+  /**
+   * Get node -> management IP mapping (best-effort)
+   */
+  async getNodeAddressMap() {
+    const map = new Map();
+    const nodes = await this.request('/api2/json/nodes');
+    if (!nodes || nodes.length === 0) return map;
+
+    const results = await Promise.allSettled(nodes.map(async (n) => {
+      const ips = new Set();
+      try {
+        const status = await this.request(`/api2/json/nodes/${n.node}/status`);
+        const ip = status?.ip || status?.address || null;
+        if (ip) ips.add(String(ip));
+      } catch {}
+
+      try {
+        const net = await this.request(`/api2/json/nodes/${n.node}/network`);
+        if (Array.isArray(net)) {
+          for (const iface of net) {
+            const addr = iface?.address || '';
+            if (addr && addr.includes('.')) {
+              const ipOnly = String(addr).split('/')[0];
+              if (ipOnly) ips.add(ipOnly);
+            }
+          }
+        }
+      } catch {}
+
+      return { node: n.node, ips: Array.from(ips) };
+    }));
+
+    for (const r of results) {
+      if (r.status === 'fulfilled' && r.value?.node) {
+        map.set(String(r.value.node), r.value.ips || []);
+      }
+    }
+
+    return map;
+  }
 }
 
 /**
@@ -229,8 +270,17 @@ async function testProxmoxConnection(apiHost, tokenId, tokenSecret) {
   return await client.testConnection();
 }
 
+/**
+ * Get Proxmox node -> IP map
+ */
+async function getNodeAddressMap(apiHost, tokenId, tokenSecret) {
+  const client = new ProxmoxClient(apiHost, tokenId, tokenSecret);
+  return await client.getNodeAddressMap();
+}
+
 module.exports = {
   ProxmoxClient,
   getVMsFromHost,
   testProxmoxConnection,
+  getNodeAddressMap,
 };
