@@ -18,6 +18,7 @@ NetCatalog ist ein Full-Stack-System zur automatischen Erfassung und Verwaltung 
 - **50+ Services erkannt** - Banner-Grabbing, HTTP-Probing, Signatur-Matching, Version-Erkennung
 - **OS-Fingerprinting** - Betriebssystem-Erkennung (Linux, Windows, macOS, etc.)
 - **MAC-Adresse Lookup** - Automatische Vendor-Identifikation (AVM, Proxmox, HP, etc.)
+- **Multi-Netzwerk-Scanning** - Mehrere CIDR-Netzwerke gleichzeitig konfigurierbar (z.B. `192.168.1.0/24, 10.0.0.0/24`)
 - **Geplante Scans** - Konfigurierbare Cron-basierte automatische Scans
 - **Scan-Historie** - Vollständiger Audit-Trail mit Zeiten und Änderungsverfolgung
 
@@ -58,7 +59,7 @@ NetCatalog ist ein Full-Stack-System zur automatischen Erfassung und Verwaltung 
 - **Host-Übersicht** - Mit Status-Icons, IP, MAC, OS-Info
 - **Detailseiten** - Technische Informationen pro Host
 - **Service-Dashboard** - Port, Protocol, Versionen, Banner
-- **InfrastrukturMAP** - Interaktive Topologie-Visualisierung
+- **InfrastrukturMAP** - Interaktive Topologie-Visualisierung (React Flow, radiales Layout, Subtree-Drag)
 - **Verfügbarkeits-Charts** - Zeitbasierte Uptime-Ansicht
 - **Scan-Historie** - Alle durchgeführten Scans mit Details
 - **Netzwerk-Einstellungen** - Scan-Netzwerk, Interval, SNMP, API-Tokens
@@ -660,5 +661,5 @@ nc -zv 192.168.66.91 49000
 
 ---
 
-**Letzte Aktualisierung:** Februar 2026  
-**Version:** 1.0.0
+**Letzte Aktualisierung:** März 2026
+**Version:** 1.1.0
