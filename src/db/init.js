@@ -150,6 +150,9 @@ ON CONFLICT (key) DO NOTHING;
 
 -- Migration: remove old username/password settings if present
 DELETE FROM settings WHERE key IN ('unifi_username', 'unifi_password');
+
+-- Migration: expand scans.network column to support multiple networks
+ALTER TABLE scans ALTER COLUMN network TYPE TEXT;
 `;
 
 async function initDatabase() {

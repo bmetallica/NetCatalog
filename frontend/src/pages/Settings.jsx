@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
-import { Save, Check, Wifi, CheckCircle, AlertCircle, Loader } from 'lucide-react';
+import { Save, Check, Wifi, CheckCircle, AlertCircle, Loader, Plus, Trash2 } from 'lucide-react';
 import { api } from '../api';
 
 function Settings() {
   const [settings, setSettings] = useState({});
+  const [networks, setNetworks] = useState(['']);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -18,6 +19,10 @@ function Settings() {
         const obj = {};
         data.forEach((s) => { obj[s.key] = s.value; });
         setSettings(obj);
+
+        // Parse scan_network into array
+        const nets = (obj.scan_network || '').split(',').map(s => s.trim()).filter(Boolean);
+        setNetworks(nets.length > 0 ? nets : ['']);
 
         // Show UniFi section if any Ubiquiti device found, or UniFi service detected, or already configured
         const hasConfig = obj.unifi_url && obj.unifi_url.length > 0;
@@ -39,7 +44,9 @@ function Settings() {
   const handleSave = async () => {
     setSaving(true);
     try {
-      await api.updateSettings(settings);
+      const validNets = networks.map(n => n.trim()).filter(Boolean);
+      const merged = { ...settings, scan_network: validNets.join(',') };
+      await api.updateSettings(merged);
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
     } catch (err) {
@@ -47,6 +54,16 @@ function Settings() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const updateNetwork = (index, value) => {
+    setNetworks(prev => prev.map((n, i) => i === index ? value : n));
+  };
+
+  const addNetwork = () => setNetworks(prev => [...prev, '']);
+
+  const removeNetwork = (index) => {
+    setNetworks(prev => prev.length > 1 ? prev.filter((_, i) => i !== index) : prev);
   };
 
   const update = (key, value) => {
@@ -87,15 +104,38 @@ function Settings() {
 
       <div className="card settings-form">
         <div className="form-group">
-          <label>Netzwerk (CIDR)</label>
-          <input
-            type="text"
-            value={settings.scan_network || ''}
-            onChange={(e) => update('scan_network', e.target.value)}
-            placeholder="z.B. 192.168.1.0/24"
-          />
-          <div className="hint">
-            Das zu scannende Netzwerk im CIDR-Format, z.B. 192.168.1.0/24 oder 10.0.0.0/16
+          <label>Netzwerke (CIDR)</label>
+          {networks.map((net, i) => (
+            <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
+              <input
+                type="text"
+                value={net}
+                onChange={(e) => updateNetwork(i, e.target.value)}
+                placeholder="z.B. 192.168.1.0/24"
+                style={{ flex: 1 }}
+              />
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => removeNetwork(i)}
+                disabled={networks.length <= 1}
+                style={{ padding: '6px 10px', flexShrink: 0 }}
+                title="Netzwerk entfernen"
+              >
+                <Trash2 size={14} />
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={addNetwork}
+            style={{ marginTop: 4 }}
+          >
+            <Plus size={14} /> Netzwerk hinzufügen
+          </button>
+          <div className="hint" style={{ marginTop: 6 }}>
+            Zu scannende Netzwerke im CIDR-Format. Mehrere Netzwerke werden nacheinander gescannt.
           </div>
         </div>
 

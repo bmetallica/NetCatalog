@@ -386,24 +386,36 @@ async function runScan() {
   let scanRecord;
 
   try {
-    const network = await settingsModel.get('scan_network') || '192.168.66.0/24';
+    const networkSetting = await settingsModel.get('scan_network') || '192.168.66.0/24';
+    const networks = networkSetting.split(',').map(s => s.trim()).filter(Boolean);
     const portRange = await settingsModel.get('scan_ports') || '1-10000';
+    const networkLabel = networks.join(', ');
 
-    scanRecord = await scansModel.create(network);
+    scanRecord = await scansModel.create(networkLabel.substring(0, 500));
     currentScanId = scanRecord.id;
-    console.log(`[Scanner] === Scan #${scanRecord.id} started for ${network} ===`);
+    console.log(`[Scanner] === Scan #${scanRecord.id} started for ${networkLabel} ===`);
 
-    // Phase 0: Ping sweep to discover alive hosts
-    const pingSweepXml = await runPingSweep(network);
-    const aliveHosts = await parsePingSweep(pingSweepXml);
-    console.log(`[Scanner] Phase 0 complete: ${aliveHosts.size} hosts alive (ping sweep)`);
+    // Phase 0 + 1: Run ping sweep and port discovery for each network
+    const aliveHosts = new Map(); // ip -> { mac, vendor, hostname }
+    const hostsMap = new Map();   // ip -> host (deduplicated)
 
-    // Phase 1: Fast nmap port discovery
-    const xml = await runNmapDiscovery(network, portRange);
-    const hosts = await parseNmapOutput(xml);
+    for (const network of networks) {
+      // Phase 0: Ping sweep
+      const pingSweepXml = await runPingSweep(network);
+      const networkAlive = await parsePingSweep(pingSweepXml);
+      for (const [ip, info] of networkAlive) aliveHosts.set(ip, info);
+      console.log(`[Scanner] Phase 0 complete for ${network}: ${networkAlive.size} hosts alive`);
 
+      // Phase 1: Fast nmap port discovery
+      const xml = await runNmapDiscovery(network, portRange);
+      const networkHosts = await parseNmapOutput(xml);
+      for (const h of networkHosts) hostsMap.set(h.ip, h);
+      console.log(`[Scanner] Phase 1 complete for ${network}: ${networkHosts.length} hosts with open ports`);
+    }
+
+    const hosts = [...hostsMap.values()];
     const totalPorts = hosts.reduce((sum, h) => sum + h.ports.length, 0);
-    console.log(`[Scanner] Phase 1 complete: ${hosts.length} hosts with open ports, ${totalPorts} ports found`);
+    console.log(`[Scanner] Phase 0+1 total: ${aliveHosts.size} alive, ${hosts.length} hosts with open ports, ${totalPorts} ports`);
 
     // Merge: hosts found by port scan + hosts alive by ping but not in port scan
     const portScanIps = new Set(hosts.map(h => h.ip));
@@ -530,7 +542,7 @@ async function runScan() {
     if (deepDiscoveryEnabled) {
       try {
         const topology = await topologyModel.getTopology();
-        const discoveryResult = await runDeepDiscovery(topology.hosts, network);
+        const discoveryResult = await runDeepDiscovery(topology.hosts, networks[0]);
         console.log(`[Scanner] Phase 3 complete: ${discoveryResult.applied} topology relationships discovered`);
       } catch (err) {
         console.error(`[Scanner] Deep Discovery error (non-fatal): ${err.message}`);
@@ -564,9 +576,10 @@ async function runDeepDiscoveryStandalone() {
   console.log('[DeepDiscovery] === Standalone Deep Discovery triggered ===');
 
   try {
-    const network = await settingsModel.get('scan_network') || '192.168.66.0/24';
+    const networkSetting = await settingsModel.get('scan_network') || '192.168.66.0/24';
+    const networks = networkSetting.split(',').map(s => s.trim()).filter(Boolean);
     const topology = await topologyModel.getTopology();
-    const result = await runDeepDiscovery(topology.hosts, network);
+    const result = await runDeepDiscovery(topology.hosts, networks[0]);
     console.log(`[DeepDiscovery] === Standalone complete: ${result.applied} relationships ===`);
     return result;
   } catch (err) {

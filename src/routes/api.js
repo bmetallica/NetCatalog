@@ -15,10 +15,14 @@ const unifiClient = require('../services/unifiClient');
 // Allowed settings keys and their validators
 const SETTINGS_VALIDATORS = {
   scan_network: (v) => {
-    if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/.test(v)) return 'Invalid CIDR format (e.g. 192.168.1.0/24)';
-    const parts = v.split('/');
-    const prefix = parseInt(parts[1]);
-    if (prefix < 8 || prefix > 32) return 'CIDR prefix must be between 8 and 32';
+    const networks = v.split(',').map(s => s.trim()).filter(Boolean);
+    if (networks.length === 0) return 'Mindestens ein Netzwerk erforderlich';
+    for (const net of networks) {
+      if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/.test(net))
+        return `Ungültiges CIDR-Format: ${net} (z.B. 192.168.1.0/24)`;
+      const prefix = parseInt(net.split('/')[1]);
+      if (prefix < 8 || prefix > 32) return `CIDR-Präfix muss zwischen 8 und 32 liegen: ${net}`;
+    }
     return null;
   },
   scan_interval: (v) => {
