@@ -459,24 +459,28 @@ function InfraMap() {
 
   // Pin positions of dragged node + all moved descendants
   const onNodeDragStop = useCallback((_, node) => {
+    // Capture before nulling – setRfNodes updater runs async and must not read dragState
+    const snap = dragState.current;
+    dragState.current = null;
+
     pinnedPositions.current.set(parseInt(node.id), {
       x: node.position.x + CX,
       y: node.position.y + CY,
     });
-    if (dragState.current?.descendants?.size > 0) {
+
+    if (snap?.descendants?.size > 0) {
       setRfNodes(prev => {
         prev.forEach(n => {
-          if (dragState.current.descendants.has(n.id)) {
+          if (snap.descendants.has(n.id)) {
             pinnedPositions.current.set(parseInt(n.id), {
               x: n.position.x + CX,
               y: n.position.y + CY,
             });
           }
         });
-        return prev; // read-only scan, no state change
+        return prev; // read-only scan, no state change needed
       });
     }
-    dragState.current = null;
   }, [setRfNodes]);
 
   const handleClassify = async (field, value) => {
