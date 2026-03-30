@@ -1,11 +1,24 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
+import {
+  ReactFlow,
+  Controls,
+  Background,
+  BackgroundVariant,
+  useNodesState,
+  useEdgesState,
+  Handle,
+  Position,
+} from '@xyflow/react';
+import '@xyflow/react/dist/style.css';
 import {
   Globe, Shield, Network as NetworkIcon, Wifi, Layers, Box, Server,
   HardDrive, Printer, Cpu, Monitor, HelpCircle, Settings as SettingsIcon,
-  ZoomIn, ZoomOut, Maximize, X, ExternalLink, Radar, Eye
+  X, ExternalLink, Radar, Eye,
 } from 'lucide-react';
 import { api } from '../api';
+
+// ── Constants ─────────────────────────────────────────────────
 
 const ICON_MAP = {
   gateway: Globe, router: Globe, firewall: Shield, switch: NetworkIcon,
@@ -17,8 +30,8 @@ const ICON_MAP = {
 const TYPE_COLORS = {
   gateway: '#f59e0b', router: '#f59e0b', firewall: '#ef4444', switch: '#3b82f6',
   ap: '#8b5cf6', hypervisor: '#06b6d4', vm: '#6366f1', server: '#22c55e',
-  nas: '#f97316', printer: '#a3a3a3', camera: '#f43f5e', iot: '#14b8a6', client: '#64748b',
-  management: '#ec4899', device: '#6b7280',
+  nas: '#f97316', printer: '#a3a3a3', camera: '#f43f5e', iot: '#14b8a6',
+  client: '#64748b', management: '#ec4899', device: '#6b7280',
 };
 
 const TYPE_ORDER = [
@@ -27,6 +40,8 @@ const TYPE_ORDER = [
   'hypervisor', 'server', 'nas',
   'vm', 'client', 'iot', 'camera', 'printer', 'device',
 ];
+
+// ── Edge computation (unchanged) ─────────────────────────────
 
 function computeEdges(hosts) {
   const edges = [];
@@ -37,37 +52,27 @@ function computeEdges(hosts) {
   for (const h of hosts) {
     if (h.computed_type === 'gateway') continue;
 
-    // 1. Explicit parent always wins
     if (h.parent_host_id && hostIds.has(h.parent_host_id)) {
       edges.push({ source: h.parent_host_id, target: h.id });
       continue;
     }
 
-    // 2. VMs auto-attach to a hypervisor
     if (h.computed_type === 'vm' && hypervisors.length > 0) {
       const vmSubnet = h.ip.split('.').slice(0, 3).join('.');
-      
-      // Try to find hypervisor in same /24 subnet with exact match
-      const sameSubnetHV = hypervisors.find(hv => {
-        const hvSubnet = hv.ip.split('.').slice(0, 3).join('.');
-        return hvSubnet === vmSubnet;
-      });
-      
-      // If no exact subnet match, check for ping cluster or traceroute info
+      const sameSubnetHV = hypervisors.find(hv =>
+        hv.ip.split('.').slice(0, 3).join('.') === vmSubnet
+      );
       let clusterHV = null;
       if (!sameSubnetHV && h.discovery_info?.ping_cluster) {
-        clusterHV = hypervisors.find(hv => 
+        clusterHV = hypervisors.find(hv =>
           hv.discovery_info?.ping_cluster?.cluster === h.discovery_info.ping_cluster.cluster
         );
       }
-      
-      // Use: same subnet > same cluster > first hypervisor
       const parent = sameSubnetHV || clusterHV || hypervisors[0];
       edges.push({ source: parent.id, target: h.id });
       continue;
     }
 
-    // 3. Everything → gateway so the tree is complete
     if (gateway) {
       edges.push({ source: gateway.id, target: h.id });
     }
@@ -75,15 +80,11 @@ function computeEdges(hosts) {
   return edges;
 }
 
-// ── Radial-tree layout ───────────────────────────────────────
-//
-// Hub nodes (have children) → tree layout below their parent
-// Leaf nodes (no children)  → radial arc around their parent
+// ── Radial-tree layout (unchanged) ────────────────────────────
 
 function layoutTree(nodes, edges) {
-  const LEVEL_H = 500;   // even more vertical gap between hub levels
+  const LEVEL_H = 500;
   const PAD = 100;
-  const MIN_ARC_SPACING = 60; // min gap between leaf nodes on the arc
 
   const nodeMap = new Map(nodes.map(n => [n.id, n]));
   const childrenOf = new Map();
@@ -95,7 +96,6 @@ function layoutTree(nodes, edges) {
     parentOf.set(e.target, e.source);
   }
 
-  // Classify each child as hub (has own children) or leaf
   function getHubs(id) {
     return (childrenOf.get(id) || []).filter(c => (childrenOf.get(c) || []).length > 0);
   }
@@ -103,7 +103,6 @@ function layoutTree(nodes, edges) {
     return (childrenOf.get(id) || []).filter(c => (childrenOf.get(c) || []).length === 0);
   }
 
-  // Sort children by type then IP
   for (const [, children] of childrenOf) {
     children.sort((a, b) => {
       const na = nodeMap.get(a), nb = nodeMap.get(b);
@@ -115,7 +114,6 @@ function layoutTree(nodes, edges) {
     });
   }
 
-  // Radial dimensions - tight, compact circles
   function ringRadius(n) {
     if (n === 0) return 0;
     if (n === 1) return 60;
@@ -126,28 +124,17 @@ function layoutTree(nodes, edges) {
     if (n <= 8) return 100 + (n - 5) * 12;
     if (n <= 12) return 136 + (n - 8) * 15;
     if (n <= 20) return 196 + (n - 12) * 18;
-    // Large groups
     return 340 + (n - 20) * 20;
   }
 
-  // Subtree width in pixels - must account for full radial extent
   const widthOf = new Map();
   function calcWidth(id) {
     if (widthOf.has(id)) return widthOf.get(id);
     const hubs = getHubs(id);
     const leaves = getLeaves(id);
-
-    if (hubs.length === 0 && leaves.length === 0) {
-      widthOf.set(id, 100);
-      return 100;
-    }
-
-    const hubW = hubs.reduce((s, c) => s + calcWidth(c), 0)
-               + Math.max(0, hubs.length - 1) * 120;
-    
-    // For leaves: full diameter with moderate margin (circles are now compact)
+    if (hubs.length === 0 && leaves.length === 0) { widthOf.set(id, 100); return 100; }
+    const hubW = hubs.reduce((s, c) => s + calcWidth(c), 0) + Math.max(0, hubs.length - 1) * 120;
     const leafW = leaves.length > 0 ? (ringRadius(leaves.length) * 2 + 200) : 0;
-    
     const w = Math.max(hubW, leafW, 150);
     widthOf.set(id, w);
     return w;
@@ -158,18 +145,15 @@ function layoutTree(nodes, edges) {
   roots.forEach(r => calcWidth(r.id));
   nodes.forEach(n => { if (!widthOf.has(n.id)) widthOf.set(n.id, 55); });
 
-  // Position recursively
   function position(id, left, depth) {
     const node = nodeMap.get(id);
     if (!node) return;
-
     const hubs = getHubs(id);
     const leaves = getLeaves(id);
     const myW = widthOf.get(id);
 
     node.y = PAD + depth * LEVEL_H;
 
-    // Position hub children below in a tree row
     if (hubs.length > 0) {
       const hubTotalW = hubs.reduce((s, c) => s + widthOf.get(c), 0) + (hubs.length - 1) * 80;
       let hLeft = left + (myW - hubTotalW) / 2;
@@ -177,7 +161,6 @@ function layoutTree(nodes, edges) {
         position(cid, hLeft, depth + 1);
         hLeft += widthOf.get(cid) + 80;
       }
-      // Center this node over its hub children
       const first = nodeMap.get(hubs[0]);
       const last = nodeMap.get(hubs[hubs.length - 1]);
       node.x = (first.x + last.x) / 2;
@@ -185,7 +168,6 @@ function layoutTree(nodes, edges) {
       node.x = left + myW / 2;
     }
 
-    // Position leaf children radially around this node
     if (leaves.length > 0) {
       const R = ringRadius(leaves.length);
       const cx = node.x;
@@ -195,18 +177,11 @@ function layoutTree(nodes, edges) {
         const ln = nodeMap.get(leaves[0]);
         if (ln) { ln.x = cx; ln.y = cy + R; }
       } else {
-        // Always use a full circular distribution around the parent node
-        // Distribute leaves evenly around the parent in a circle
-        const fullCircle = Math.PI * 2;
-        const startAngle = -Math.PI / 2; // Start at the top
-
+        const startAngle = -Math.PI / 2;
         for (let i = 0; i < leaves.length; i++) {
-          const angle = startAngle + (i / leaves.length) * fullCircle;
+          const angle = startAngle + (i / leaves.length) * Math.PI * 2;
           const ln = nodeMap.get(leaves[i]);
-          if (ln) {
-            ln.x = cx + R * Math.cos(angle);
-            ln.y = cy + R * Math.sin(angle);
-          }
+          if (ln) { ln.x = cx + R * Math.cos(angle); ln.y = cy + R * Math.sin(angle); }
         }
       }
     }
@@ -215,187 +190,195 @@ function layoutTree(nodes, edges) {
   let totalLeft = PAD;
   for (const root of roots) {
     position(root.id, totalLeft, 0);
-    // Add MUCH more horizontal space between trees
     totalLeft += widthOf.get(root.id) + 600;
   }
 
-  // Ensure no negative positions & compute canvas size
-  let minX = Infinity, maxX = 0, maxY = 0;
-  for (const n of nodes) {
-    if (n.x != null) { minX = Math.min(minX, n.x); maxX = Math.max(maxX, n.x); maxY = Math.max(maxY, n.y); }
-  }
+  let minX = Infinity;
+  for (const n of nodes) { if (n.x != null) minX = Math.min(minX, n.x); }
   if (minX < PAD) {
     const shift = PAD - minX;
     nodes.forEach(n => { if (n.x != null) n.x += shift; });
-    maxX += shift;
   }
-
-  return {
-    canvasW: Math.max(2000, maxX + PAD * 2),
-    canvasH: Math.max(900, maxY + PAD + 100),
-  };
 }
 
-// ── Descendants helper (for subtree dragging) ────────────────
+// ── Custom Node component ─────────────────────────────────────
 
-function getDescendantIds(nodeId, edges) {
-  const childrenOf = new Map();
-  for (const e of edges) {
-    if (!childrenOf.has(e.source)) childrenOf.set(e.source, []);
-    childrenOf.get(e.source).push(e.target);
-  }
-  const result = new Set();
-  const queue = [...(childrenOf.get(nodeId) || [])];
-  while (queue.length > 0) {
-    const id = queue.shift();
-    if (result.has(id)) continue;
-    result.add(id);
-    for (const cid of (childrenOf.get(id) || [])) queue.push(cid);
-  }
-  return result;
+const NODE_R = 22;
+const SVG_PAD = 4;
+const NODE_W = NODE_R * 2 + SVG_PAD * 2;  // 52
+const NODE_H = NODE_R * 2 + SVG_PAD * 2 + 20; // 68 (includes label)
+const CX = NODE_R + SVG_PAD; // 26 – circle center x in SVG
+const CY = NODE_R + SVG_PAD; // 26 – circle center y in SVG
+
+const HANDLE_STYLE = {
+  opacity: 0,
+  width: 1,
+  height: 1,
+  minWidth: 0,
+  minHeight: 0,
+  background: 'transparent',
+  border: 'none',
+};
+
+function InfraNode({ data, selected }) {
+  const Icon = ICON_MAP[data.computed_type] || HelpCircle;
+  const color = TYPE_COLORS[data.computed_type] || '#6b7280';
+
+  return (
+    <div style={{ width: NODE_W, height: NODE_H, position: 'relative' }}>
+      {/* Handle at circle top */}
+      <Handle
+        type="target"
+        position={Position.Top}
+        style={{ ...HANDLE_STYLE, top: SVG_PAD, left: CX, transform: 'translate(-50%, 0)' }}
+      />
+
+      <svg width={NODE_W} height={NODE_H} style={{ overflow: 'visible' }}>
+        <circle
+          cx={CX} cy={CY} r={NODE_R}
+          fill="var(--bg-card)"
+          stroke={selected ? 'var(--accent)' : (data.status === 'up' ? 'var(--success)' : 'var(--danger)')}
+          strokeWidth={selected ? 3 : 2}
+        />
+        <circle cx={CX} cy={CY} r={NODE_R - 5} fill={color} opacity={0.18} />
+        <foreignObject x={CX - 9} y={CY - 9} width={18} height={18}>
+          <div style={{ color, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Icon size={15} />
+          </div>
+        </foreignObject>
+        <text
+          x={CX} y={CY + NODE_R + 14}
+          textAnchor="middle"
+          style={{
+            fontSize: '11px',
+            fill: 'var(--text-secondary)',
+            fontFamily: 'inherit',
+            userSelect: 'none',
+            pointerEvents: 'none',
+          }}
+        >
+          {data.hostname || data.ip.split('.').slice(-1)[0]}
+        </text>
+        <title>
+          {data.hostname ? `${data.hostname} (${data.ip})` : data.ip}
+          {'\n'}Typ: {data.computed_type}
+          {'\n'}Status: {data.status === 'up' ? 'Online' : 'Offline'}
+          {'\n'}{data.service_count} Dienste
+          {data.vendor ? `\nHersteller: ${data.vendor}` : ''}
+        </title>
+      </svg>
+
+      {/* Handle at circle bottom (above label) */}
+      <Handle
+        type="source"
+        position={Position.Bottom}
+        style={{ ...HANDLE_STYLE, top: CY + NODE_R, bottom: 'auto', left: CX, transform: 'translate(-50%, 0)' }}
+      />
+    </div>
+  );
 }
 
-// ── Component ────────────────────────────────────────────────
+// Must be outside component to avoid remounting on re-render
+const nodeTypes = { infraNode: InfraNode };
+
+// ── Main component ────────────────────────────────────────────
 
 function InfraMap() {
+  const [rfNodes, setRfNodes, onNodesChange] = useNodesState([]);
+  const [rfEdges, setRfEdges, onEdgesChange] = useEdgesState([]);
   const [topology, setTopology] = useState(null);
-  const [nodes, setNodes] = useState([]);
-  const [edges, setEdges] = useState([]);
-  const [canvasSize, setCanvasSize] = useState({ w: 2000, h: 900 });
   const [selectedId, setSelectedId] = useState(null);
-  const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
-  const [dragging, setDragging] = useState(null);
-  const [panning, setPanning] = useState(null);
   const [loading, setLoading] = useState(true);
   const [discovering, setDiscovering] = useState(false);
-  const svgRef = useRef(null);
+  const pinnedPositions = useRef(new Map()); // nodeId -> center {x, y}
   const navigate = useNavigate();
 
-  const NODE_R = 22;
+  const selected = useMemo(() => {
+    if (!selectedId || !topology) return null;
+    return topology.hosts.find(h => h.id === selectedId) || null;
+  }, [selectedId, topology]);
 
-  const processTopology = useCallback((data, preservePositions = null) => {
-    const newNodes = data.hosts.map(h => ({ ...h }));
-    const newEdges = computeEdges(newNodes);
-    const { canvasW, canvasH } = layoutTree(newNodes, newEdges);
+  // Build React Flow nodes+edges from topology data
+  const buildRfData = useCallback((data, pinned) => {
+    const rawNodes = data.hosts.map(h => ({ ...h }));
+    const computedEdges = computeEdges(rawNodes);
+    layoutTree(rawNodes, computedEdges);
 
-    if (preservePositions) {
-      newNodes.forEach(n => {
-        const prev = preservePositions.get(n.id);
-        if (prev && prev.pinned) {
-          n.x = prev.x;
-          n.y = prev.y;
-          n.pinned = true;
-        }
-      });
-    }
+    rawNodes.forEach(n => {
+      const p = pinned.get(n.id);
+      if (p) { n.x = p.x; n.y = p.y; }
+    });
 
-    return { newNodes, newEdges, canvasW, canvasH };
+    const rfN = rawNodes.map(n => ({
+      id: String(n.id),
+      type: 'infraNode',
+      // position = top-left corner of node element; layout gives center coords
+      position: { x: n.x - CX, y: n.y - CY },
+      data: { ...n },
+      draggable: true,
+    }));
+
+    const rfE = computedEdges.map(e => ({
+      id: `e-${e.source}-${e.target}`,
+      source: String(e.source),
+      target: String(e.target),
+      type: 'smoothstep',
+      style: { stroke: 'var(--border-light)', strokeWidth: 1.5 },
+    }));
+
+    return { rfN, rfE };
   }, []);
 
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (preservePinned = false) => {
     try {
       const data = await api.getTopology();
       setTopology(data);
-      const { newNodes, newEdges, canvasW, canvasH } = processTopology(data);
-      setNodes(newNodes);
-      setEdges(newEdges);
-      setCanvasSize({ w: canvasW, h: canvasH });
+      const pinned = preservePinned ? pinnedPositions.current : new Map();
+      const { rfN, rfE } = buildRfData(data, pinned);
+      setRfNodes(rfN);
+      setRfEdges(rfE);
     } catch (err) {
       console.error('Topology fetch failed:', err);
     } finally {
       setLoading(false);
     }
-  }, [processTopology]);
+  }, [buildRfData, setRfNodes, setRfEdges]);
 
   useEffect(() => {
-    fetchData();
-    const interval = setInterval(async () => {
-      try {
-        const data = await api.getTopology();
-        setTopology(data);
-        setNodes(prev => {
-          const posMap = new Map(prev.map(n => [n.id, { x: n.x, y: n.y, pinned: n.pinned }]));
-          const { newNodes, newEdges, canvasW, canvasH } = processTopology(data, posMap);
-          setEdges(newEdges);
-          setCanvasSize({ w: canvasW, h: canvasH });
-          return newNodes;
-        });
-      } catch (err) { /* silent */ }
-    }, 15000);
+    fetchData(false);
+    const interval = setInterval(() => fetchData(true), 15000);
     return () => clearInterval(interval);
-  }, [fetchData, processTopology]);
+  }, [fetchData]);
 
-  const selected = nodes.find(n => n.id === selectedId);
+  // Sync visual selection + edge highlighting whenever selectedId changes
+  useEffect(() => {
+    setRfNodes(prev => prev.map(n => ({ ...n, selected: n.id === String(selectedId) })));
+    setRfEdges(prev => prev.map(e => ({
+      ...e,
+      style: {
+        stroke: (e.source === String(selectedId) || e.target === String(selectedId))
+          ? 'var(--accent)' : 'var(--border-light)',
+        strokeWidth: (e.source === String(selectedId) || e.target === String(selectedId))
+          ? 2.5 : 1.5,
+      },
+    })));
+  }, [selectedId, setRfNodes, setRfEdges]);
 
-  const getSvgPoint = (e) => {
-    const svg = svgRef.current;
-    const rect = svg.getBoundingClientRect();
-    const scaleX = canvasSize.w / rect.width;
-    const scaleY = canvasSize.h / rect.height;
-    return {
-      x: (e.clientX - rect.left) * scaleX / transform.scale - transform.x / transform.scale,
-      y: (e.clientY - rect.top) * scaleY / transform.scale - transform.y / transform.scale,
-    };
-  };
+  const onNodeClick = useCallback((_, node) => {
+    setSelectedId(parseInt(node.id));
+  }, []);
 
-  const onMouseDown = (e, nodeId) => {
-    e.stopPropagation();
-    if (e.button !== 0) return;
-    setSelectedId(nodeId);
-    const pt = getSvgPoint(e);
-    const node = nodes.find(n => n.id === nodeId);
-    const descendants = getDescendantIds(nodeId, edges);
-    setDragging({ id: nodeId, offsetX: pt.x - node.x, offsetY: pt.y - node.y, descendants });
-  };
-
-  const onCanvasMouseDown = (e) => {
-    if (e.button !== 0) return;
-    setPanning({ startX: e.clientX - transform.x, startY: e.clientY - transform.y });
+  const onPaneClick = useCallback(() => {
     setSelectedId(null);
-  };
+  }, []);
 
-  const onMouseMove = (e) => {
-    if (panning) {
-      setTransform(t => ({ ...t, x: e.clientX - panning.startX, y: e.clientY - panning.startY }));
-      return;
-    }
-    if (!dragging) return;
-    const pt = getSvgPoint(e);
-    const nx = pt.x - dragging.offsetX;
-    const ny = pt.y - dragging.offsetY;
-
-    setNodes(prev => {
-      const current = prev.find(n => n.id === dragging.id);
-      if (!current) return prev;
-      const dx = nx - current.x;
-      const dy = ny - current.y;
-      return prev.map(n => {
-        if (n.id === dragging.id || dragging.descendants.has(n.id)) {
-          return { ...n, x: n.x + dx, y: n.y + dy, pinned: true };
-        }
-        return n;
-      });
+  // Save dragged position as pinned (center coords)
+  const onNodeDragStop = useCallback((_, node) => {
+    pinnedPositions.current.set(parseInt(node.id), {
+      x: node.position.x + CX,
+      y: node.position.y + CY,
     });
-  };
-
-  const onMouseUp = () => {
-    if (panning) { setPanning(null); return; }
-    setDragging(null);
-  };
-
-  const zoom = (delta) => {
-    setTransform(t => ({
-      ...t,
-      scale: Math.max(0.2, Math.min(4, t.scale + delta)),
-    }));
-  };
-
-  const onWheel = (e) => {
-    e.preventDefault();
-    zoom(e.deltaY > 0 ? -0.1 : 0.1);
-  };
-
-  const resetView = () => setTransform({ x: 0, y: 0, scale: 1 });
+  }, []);
 
   const handleClassify = async (field, value) => {
     if (!selectedId) return;
@@ -404,12 +387,7 @@ function InfraMap() {
       if (field === 'device_type') data.device_type = value || null;
       if (field === 'parent_host_id') data.parent_host_id = value ? parseInt(value) : null;
       await api.classifyHost(selectedId, data);
-      const topo = await api.getTopology();
-      setTopology(topo);
-      const { newNodes, newEdges, canvasW, canvasH } = processTopology(topo);
-      setNodes(newNodes);
-      setEdges(newEdges);
-      setCanvasSize({ w: canvasW, h: canvasH });
+      await fetchData(true);
     } catch (err) {
       console.error('Classify failed:', err);
     }
@@ -420,7 +398,7 @@ function InfraMap() {
   }
 
   const deviceTypes = topology?.deviceTypes || [];
-  const legendTypes = [...new Set(nodes.map(n => n.computed_type))];
+  const legendTypes = [...new Set((topology?.hosts || []).map(h => h.computed_type))];
   legendTypes.sort((a, b) => TYPE_ORDER.indexOf(a) - TYPE_ORDER.indexOf(b));
 
   return (
@@ -428,7 +406,7 @@ function InfraMap() {
       <div className="page-header">
         <div>
           <h2>Infrastruktur</h2>
-          <span className="subtitle">{nodes.length} Geräte klassifiziert</span>
+          <span className="subtitle">{topology?.hosts?.length || 0} Geräte klassifiziert</span>
         </div>
         <button
           className={`btn btn-primary ${discovering ? 'discovering' : ''}`}
@@ -440,18 +418,8 @@ function InfraMap() {
               let polls = 0;
               const poll = setInterval(async () => {
                 polls++;
-                try {
-                  const data = await api.getTopology();
-                  setTopology(data);
-                  const { newNodes, newEdges, canvasW, canvasH } = processTopology(data);
-                  setNodes(newNodes);
-                  setEdges(newEdges);
-                  setCanvasSize({ w: canvasW, h: canvasH });
-                } catch {}
-                if (polls >= 8) {
-                  clearInterval(poll);
-                  setDiscovering(false);
-                }
+                try { await fetchData(true); } catch {}
+                if (polls >= 8) { clearInterval(poll); setDiscovering(false); }
               }, 5000);
             } catch (err) {
               console.error('Discovery error:', err);
@@ -480,86 +448,43 @@ function InfraMap() {
 
       <div className="infra-map-container">
         <div className="infra-map-canvas">
-          <svg
-            ref={svgRef}
-            viewBox={`0 0 ${canvasSize.w} ${canvasSize.h}`}
-            preserveAspectRatio="xMidYMid meet"
-            onMouseDown={onCanvasMouseDown}
-            onMouseMove={onMouseMove}
-            onMouseUp={onMouseUp}
-            onMouseLeave={onMouseUp}
-            onWheel={onWheel}
+          <ReactFlow
+            nodes={rfNodes}
+            edges={rfEdges}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onNodeClick={onNodeClick}
+            onPaneClick={onPaneClick}
+            onNodeDragStop={onNodeDragStop}
+            nodeTypes={nodeTypes}
+            nodesConnectable={false}
+            edgesReconnectable={false}
+            colorMode="dark"
+            fitView
+            fitViewOptions={{ padding: 0.15 }}
+            minZoom={0.05}
+            maxZoom={4}
+            deleteKeyCode={null}
           >
-            <g transform={`translate(${transform.x},${transform.y}) scale(${transform.scale})`}>
-              {/* Edges */}
-              {edges.map((e, i) => {
-                const s = nodes.find(n => n.id === e.source);
-                const t = nodes.find(n => n.id === e.target);
-                if (!s || !t) return null;
-                const isHighlighted = selectedId && (e.source === selectedId || e.target === selectedId);
-
-                // Vertical tree edges: straight down then horizontal
-                const midY = (s.y + t.y) / 2;
-                return (
-                  <path key={i}
-                    d={`M ${s.x} ${s.y + NODE_R} C ${s.x} ${midY}, ${t.x} ${midY}, ${t.x} ${t.y - NODE_R}`}
-                    className={`map-edge ${isHighlighted ? 'highlighted' : ''}`}
-                  />
-                );
-              })}
-
-              {/* Nodes */}
-              {nodes.map(n => {
-                const Icon = ICON_MAP[n.computed_type] || HelpCircle;
-                const color = TYPE_COLORS[n.computed_type] || '#6b7280';
-                const isSelected = selectedId === n.id;
-                return (
-                  <g key={n.id}
-                    className={`map-node ${isSelected ? 'selected' : ''}`}
-                    onMouseDown={(e) => onMouseDown(e, n.id)}
-                    style={{ cursor: 'grab' }}
-                  >
-                    <circle cx={n.x} cy={n.y} r={NODE_R}
-                      fill="var(--bg-card)"
-                      stroke={n.status === 'up' ? 'var(--success)' : 'var(--danger)'}
-                      strokeWidth={isSelected ? 3 : 2}
-                    />
-                    <circle cx={n.x} cy={n.y} r={NODE_R - 5}
-                      fill={color} opacity={0.18} />
-                    <foreignObject x={n.x - 9} y={n.y - 9} width={18} height={18}>
-                      <div style={{ color, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        <Icon size={15} />
-                      </div>
-                    </foreignObject>
-                    <text x={n.x} y={n.y + NODE_R + 13} className="node-label">
-                      {(n.hostname || n.ip.split('.').slice(-1)[0])}
-                    </text>
-                    <title>
-                      {n.hostname ? `${n.hostname} (${n.ip})` : n.ip}
-                      {'\n'}Typ: {deviceTypes.find(d => d.value === n.computed_type)?.label || n.computed_type}
-                      {'\n'}Status: {n.status === 'up' ? 'Online' : 'Offline'}
-                      {'\n'}{n.service_count} Dienste
-                      {n.vendor ? `\nHersteller: ${n.vendor}` : ''}
-                    </title>
-                  </g>
-                );
-              })}
-            </g>
-          </svg>
-
-          <div className="map-controls">
-            <button onClick={() => zoom(0.2)} title="Vergrößern"><ZoomIn size={16} /></button>
-            <button onClick={() => zoom(-0.2)} title="Verkleinern"><ZoomOut size={16} /></button>
-            <button onClick={resetView} title="Ansicht zurücksetzen"><Maximize size={16} /></button>
-          </div>
+            <Background
+              color="var(--border)"
+              variant={BackgroundVariant.Dots}
+              gap={28}
+              size={1.2}
+            />
+            <Controls />
+          </ReactFlow>
         </div>
 
         {selected && (
           <div className="map-sidepanel">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
               <h3 style={{ margin: 0 }}>{selected.hostname || selected.ip}</h3>
-              <button className="btn btn-sm" onClick={() => setSelectedId(null)}
-                style={{ padding: '4px 8px', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+              <button
+                className="btn btn-sm"
+                onClick={() => setSelectedId(null)}
+                style={{ padding: '4px 8px', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', color: 'var(--text-secondary)', cursor: 'pointer' }}
+              >
                 <X size={14} />
               </button>
             </div>
@@ -708,11 +633,11 @@ function InfraMap() {
                 onChange={(e) => handleClassify('parent_host_id', e.target.value)}
               >
                 <option value="">Kein (direkt am Gateway)</option>
-                {nodes
-                  .filter(n => n.id !== selected.id)
+                {rfNodes
+                  .filter(n => n.id !== String(selected.id))
                   .map(n => (
                     <option key={n.id} value={n.id}>
-                      {n.hostname || n.ip} ({deviceTypes.find(d => d.value === n.computed_type)?.label || n.computed_type})
+                      {n.data.hostname || n.data.ip} ({deviceTypes.find(d => d.value === n.data.computed_type)?.label || n.data.computed_type})
                     </option>
                   ))}
               </select>
@@ -722,7 +647,7 @@ function InfraMap() {
               <>
                 <hr style={{ border: 'none', borderTop: '1px solid var(--border)', margin: '16px 0' }} />
                 <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 8 }}>Proxmox API</div>
-                
+
                 <div className="info-item">
                   <label>API Host</label>
                   <input
@@ -737,16 +662,8 @@ function InfraMap() {
                             token_id: selected.proxmox_api_token_id,
                             token_secret: selected.proxmox_api_token_secret,
                           });
-                          const topo = await api.getTopology();
-                          setTopology(topo);
-                          const { newNodes, newEdges, canvasW, canvasH } = processTopology(topo);
-                          setNodes(newNodes);
-                          setEdges(newEdges);
-                          setCanvasSize({ w: canvasW, h: canvasH });
-                        } catch (err) {
-                          console.error('Proxmox update failed:', err);
-                          alert('Fehler beim Speichern: ' + err.message);
-                        }
+                          await fetchData(true);
+                        } catch (err) { alert('Fehler: ' + err.message); }
                       }
                     }}
                   />
@@ -766,16 +683,8 @@ function InfraMap() {
                             token_id: e.target.value || null,
                             token_secret: selected.proxmox_api_token_secret,
                           });
-                          const topo = await api.getTopology();
-                          setTopology(topo);
-                          const { newNodes, newEdges, canvasW, canvasH } = processTopology(topo);
-                          setNodes(newNodes);
-                          setEdges(newEdges);
-                          setCanvasSize({ w: canvasW, h: canvasH });
-                        } catch (err) {
-                          console.error('Proxmox update failed:', err);
-                          alert('Fehler beim Speichern: ' + err.message);
-                        }
+                          await fetchData(true);
+                        } catch (err) { alert('Fehler: ' + err.message); }
                       }
                     }}
                   />
@@ -795,16 +704,8 @@ function InfraMap() {
                             token_id: selected.proxmox_api_token_id,
                             token_secret: e.target.value || null,
                           });
-                          const topo = await api.getTopology();
-                          setTopology(topo);
-                          const { newNodes, newEdges, canvasW, canvasH } = processTopology(topo);
-                          setNodes(newNodes);
-                          setEdges(newEdges);
-                          setCanvasSize({ w: canvasW, h: canvasH });
-                        } catch (err) {
-                          console.error('Proxmox update failed:', err);
-                          alert('Fehler beim Speichern: ' + err.message);
-                        }
+                          await fetchData(true);
+                        } catch (err) { alert('Fehler: ' + err.message); }
                       }
                     }}
                   />
@@ -812,7 +713,7 @@ function InfraMap() {
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
                   VMs werden bei Deep Discovery automatisch zugeordnet
                 </div>
-                
+
                 {selected.proxmox_api_host && selected.proxmox_api_token_id && selected.proxmox_api_token_secret && (
                   <button
                     className="btn btn-secondary"
@@ -836,11 +737,13 @@ function InfraMap() {
               </>
             )}
 
-            {(selected.vendor?.includes('AVM') || selected.discovery_info?.ssdp?.server?.includes('FRITZ!Box')) && (selected.computed_type === 'gateway' || selected.computed_type === 'router' || selected.device_type === 'gateway' || selected.device_type === 'router' || selected.computed_type === 'firewall' || selected.device_type === 'firewall' || selected.computed_type === 'ap' || selected.device_type === 'ap') && (
+            {(selected.vendor?.includes('AVM') || selected.discovery_info?.ssdp?.server?.includes('FRITZ!Box')) &&
+              (['gateway', 'router', 'firewall', 'ap'].includes(selected.computed_type) ||
+               ['gateway', 'router', 'firewall', 'ap'].includes(selected.device_type)) && (
               <>
                 <hr style={{ border: 'none', borderTop: '1px solid var(--border)', margin: '16px 0' }} />
                 <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 8 }}>FritzBox Zugangsdaten</div>
-                
+
                 <div className="info-item">
                   <label>FritzBox Host/URL</label>
                   <input
@@ -855,16 +758,8 @@ function InfraMap() {
                             fritzbox_username: selected.fritzbox_username,
                             fritzbox_password: selected.fritzbox_password,
                           });
-                          const topo = await api.getTopology();
-                          setTopology(topo);
-                          const { newNodes, newEdges, canvasW, canvasH } = processTopology(topo);
-                          setNodes(newNodes);
-                          setEdges(newEdges);
-                          setCanvasSize({ w: canvasW, h: canvasH });
-                        } catch (err) {
-                          console.error('FritzBox update failed:', err);
-                          alert('Fehler beim Speichern: ' + err.message);
-                        }
+                          await fetchData(true);
+                        } catch (err) { alert('Fehler: ' + err.message); }
                       }
                     }}
                   />
@@ -884,16 +779,8 @@ function InfraMap() {
                             fritzbox_username: e.target.value || null,
                             fritzbox_password: selected.fritzbox_password,
                           });
-                          const topo = await api.getTopology();
-                          setTopology(topo);
-                          const { newNodes, newEdges, canvasW, canvasH } = processTopology(topo);
-                          setNodes(newNodes);
-                          setEdges(newEdges);
-                          setCanvasSize({ w: canvasW, h: canvasH });
-                        } catch (err) {
-                          console.error('FritzBox update failed:', err);
-                          alert('Fehler beim Speichern: ' + err.message);
-                        }
+                          await fetchData(true);
+                        } catch (err) { alert('Fehler: ' + err.message); }
                       }
                     }}
                   />
@@ -913,16 +800,8 @@ function InfraMap() {
                             fritzbox_username: selected.fritzbox_username,
                             fritzbox_password: e.target.value || null,
                           });
-                          const topo = await api.getTopology();
-                          setTopology(topo);
-                          const { newNodes, newEdges, canvasW, canvasH } = processTopology(topo);
-                          setNodes(newNodes);
-                          setEdges(newEdges);
-                          setCanvasSize({ w: canvasW, h: canvasH });
-                        } catch (err) {
-                          console.error('FritzBox update failed:', err);
-                          alert('Fehler beim Speichern: ' + err.message);
-                        }
+                          await fetchData(true);
+                        } catch (err) { alert('Fehler: ' + err.message); }
                       }
                     }}
                   />
@@ -930,7 +809,7 @@ function InfraMap() {
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
                   WLAN-Geräte werden bei Deep Discovery automatisch erkannt
                 </div>
-                
+
                 {selected.fritzbox_host && selected.fritzbox_username && selected.fritzbox_password && (
                   <button
                     className="btn btn-secondary"

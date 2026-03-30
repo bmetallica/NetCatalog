@@ -815,17 +815,56 @@ a:hover { color: var(--accent-hover); }
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
-  cursor: grab;
   position: relative;
+  min-height: 0;
 }
 
-.infra-map-canvas:active { cursor: grabbing; }
-
-.infra-map-canvas svg {
+/* React Flow integration */
+.infra-map-canvas .react-flow {
   width: 100%;
   height: 100%;
-  display: block;
 }
+
+.infra-map-canvas .react-flow__background {
+  background: var(--bg-secondary);
+}
+
+/* Custom node: remove React Flow default node chrome */
+.react-flow__node-infraNode {
+  background: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+}
+.react-flow__node-infraNode:focus,
+.react-flow__node-infraNode:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
+.react-flow__node-infraNode .react-flow__node-toolbar { display: none; }
+
+/* Hover glow on nodes */
+.react-flow__node-infraNode:hover circle:first-child {
+  filter: brightness(1.3);
+}
+
+/* Controls panel */
+.react-flow__controls {
+  background: var(--bg-card) !important;
+  border: 1px solid var(--border) !important;
+  box-shadow: none !important;
+  border-radius: var(--radius-sm) !important;
+}
+.react-flow__controls-button {
+  background: transparent !important;
+  border: none !important;
+  border-bottom: 1px solid var(--border) !important;
+  color: var(--text-secondary) !important;
+}
+.react-flow__controls-button:last-child { border-bottom: none !important; }
+.react-flow__controls-button:hover { background: var(--bg-card-hover) !important; }
+.react-flow__controls-button svg { fill: var(--text-secondary) !important; }
 
 .map-edge {
   stroke: var(--border-light);
