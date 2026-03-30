@@ -7,6 +7,7 @@ import {
   BackgroundVariant,
   useNodesState,
   useEdgesState,
+  useReactFlow,
   Handle,
   Position,
 } from '@xyflow/react';
@@ -281,6 +282,20 @@ function InfraNode({ data, selected }) {
 // Must be outside component to avoid remounting on re-render
 const nodeTypes = { infraNode: InfraNode };
 
+// ── FitView helper (must live inside ReactFlow provider) ──────
+
+function FitViewOnLoad({ loaded }) {
+  const { fitView } = useReactFlow();
+  useEffect(() => {
+    if (loaded) {
+      // Small delay so React Flow has rendered the nodes before fitting
+      const t = setTimeout(() => fitView({ padding: 0.15, duration: 300 }), 80);
+      return () => clearTimeout(t);
+    }
+  }, [loaded, fitView]);
+  return null;
+}
+
 // ── Main component ────────────────────────────────────────────
 
 function InfraMap() {
@@ -289,8 +304,11 @@ function InfraMap() {
   const [topology, setTopology] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [nodesLoaded, setNodesLoaded] = useState(false);
   const [discovering, setDiscovering] = useState(false);
-  const pinnedPositions = useRef(new Map()); // nodeId -> center {x, y}
+  const pinnedPositions = useRef(new Map()); // nodeId(int) -> center {x, y}
+  const edgeTopologyRef = useRef([]);        // [{source,target}] string IDs, topology only
+  const dragState = useRef(null);            // active drag: {nodeId, prevPos, descendants}
   const navigate = useNavigate();
 
   const selected = useMemo(() => {
@@ -299,7 +317,7 @@ function InfraMap() {
   }, [selectedId, topology]);
 
   // Build React Flow nodes+edges from topology data
-  const buildRfData = useCallback((data, pinned) => {
+  const buildRfData = useCallback((data, pinned, currentSelectedId) => {
     const rawNodes = data.hosts.map(h => ({ ...h }));
     const computedEdges = computeEdges(rawNodes);
     layoutTree(rawNodes, computedEdges);
@@ -312,9 +330,13 @@ function InfraMap() {
     const rfN = rawNodes.map(n => ({
       id: String(n.id),
       type: 'infraNode',
-      // position = top-left corner of node element; layout gives center coords
-      position: { x: n.x - CX, y: n.y - CY },
+      // position = top-left of node element; layout gives center coords
+      position: {
+        x: isFinite(n.x) ? n.x - CX : 0,
+        y: isFinite(n.y) ? n.y - CY : 0,
+      },
       data: { ...n },
+      selected: n.id === currentSelectedId,
       draggable: true,
     }));
 
@@ -323,20 +345,31 @@ function InfraMap() {
       source: String(e.source),
       target: String(e.target),
       type: 'smoothstep',
-      style: { stroke: 'var(--border-light)', strokeWidth: 1.5 },
+      style: {
+        stroke: (e.source === currentSelectedId || e.target === currentSelectedId)
+          ? 'var(--accent)' : 'var(--border-light)',
+        strokeWidth: (e.source === currentSelectedId || e.target === currentSelectedId) ? 2.5 : 1.5,
+      },
+    }));
+
+    // Keep topology ref in sync for subtree drag (string IDs, no styles)
+    edgeTopologyRef.current = computedEdges.map(e => ({
+      source: String(e.source),
+      target: String(e.target),
     }));
 
     return { rfN, rfE };
   }, []);
 
-  const fetchData = useCallback(async (preservePinned = false) => {
+  const fetchData = useCallback(async (preservePinned = false, currentSelectedId = null) => {
     try {
       const data = await api.getTopology();
       setTopology(data);
       const pinned = preservePinned ? pinnedPositions.current : new Map();
-      const { rfN, rfE } = buildRfData(data, pinned);
+      const { rfN, rfE } = buildRfData(data, pinned, currentSelectedId);
       setRfNodes(rfN);
       setRfEdges(rfE);
+      setNodesLoaded(true);
     } catch (err) {
       console.error('Topology fetch failed:', err);
     } finally {
@@ -345,24 +378,33 @@ function InfraMap() {
   }, [buildRfData, setRfNodes, setRfEdges]);
 
   useEffect(() => {
-    fetchData(false);
-    const interval = setInterval(() => fetchData(true), 15000);
+    fetchData(false, null);
+    const interval = setInterval(() => {
+      // Use functional state read to get current selectedId without stale closure
+      setSelectedId(id => { fetchData(true, id); return id; });
+    }, 15000);
     return () => clearInterval(interval);
   }, [fetchData]);
 
-  // Sync visual selection + edge highlighting whenever selectedId changes
+  // Only update edge highlight on selection change (don't touch nodes – React Flow owns `selected`)
   useEffect(() => {
-    setRfNodes(prev => prev.map(n => ({ ...n, selected: n.id === String(selectedId) })));
-    setRfEdges(prev => prev.map(e => ({
-      ...e,
-      style: {
-        stroke: (e.source === String(selectedId) || e.target === String(selectedId))
-          ? 'var(--accent)' : 'var(--border-light)',
-        strokeWidth: (e.source === String(selectedId) || e.target === String(selectedId))
-          ? 2.5 : 1.5,
-      },
-    })));
-  }, [selectedId, setRfNodes, setRfEdges]);
+    if (!selectedId) {
+      setRfEdges(prev => prev.map(e => ({
+        ...e,
+        style: { stroke: 'var(--border-light)', strokeWidth: 1.5 },
+      })));
+    } else {
+      setRfEdges(prev => prev.map(e => ({
+        ...e,
+        style: {
+          stroke: (e.source === String(selectedId) || e.target === String(selectedId))
+            ? 'var(--accent)' : 'var(--border-light)',
+          strokeWidth: (e.source === String(selectedId) || e.target === String(selectedId))
+            ? 2.5 : 1.5,
+        },
+      })));
+    }
+  }, [selectedId, setRfEdges]);
 
   const onNodeClick = useCallback((_, node) => {
     setSelectedId(parseInt(node.id));
@@ -372,13 +414,70 @@ function InfraMap() {
     setSelectedId(null);
   }, []);
 
-  // Save dragged position as pinned (center coords)
+  // Build descendant set (string IDs) for a given node using current edge topology
+  const getDescendants = useCallback((nodeId) => {
+    const childrenOf = new Map();
+    edgeTopologyRef.current.forEach(e => {
+      if (!childrenOf.has(e.source)) childrenOf.set(e.source, []);
+      childrenOf.get(e.source).push(e.target);
+    });
+    const result = new Set();
+    const queue = [...(childrenOf.get(nodeId) || [])];
+    while (queue.length > 0) {
+      const id = queue.shift();
+      if (result.has(id)) continue;
+      result.add(id);
+      (childrenOf.get(id) || []).forEach(cid => queue.push(cid));
+    }
+    return result;
+  }, []);
+
+  const onNodeDragStart = useCallback((_, node) => {
+    dragState.current = {
+      nodeId: node.id,
+      prevPos: { x: node.position.x, y: node.position.y },
+      descendants: getDescendants(node.id),
+    };
+  }, [getDescendants]);
+
+  // Move all descendants by the same delta as the dragged node
+  const onNodeDrag = useCallback((_, node) => {
+    if (!dragState.current || dragState.current.nodeId !== node.id) return;
+    if (dragState.current.descendants.size === 0) return;
+
+    const dx = node.position.x - dragState.current.prevPos.x;
+    const dy = node.position.y - dragState.current.prevPos.y;
+    dragState.current.prevPos = { x: node.position.x, y: node.position.y };
+
+    const { descendants } = dragState.current;
+    setRfNodes(prev => prev.map(n =>
+      descendants.has(n.id)
+        ? { ...n, position: { x: n.position.x + dx, y: n.position.y + dy } }
+        : n
+    ));
+  }, [setRfNodes]);
+
+  // Pin positions of dragged node + all moved descendants
   const onNodeDragStop = useCallback((_, node) => {
     pinnedPositions.current.set(parseInt(node.id), {
       x: node.position.x + CX,
       y: node.position.y + CY,
     });
-  }, []);
+    if (dragState.current?.descendants?.size > 0) {
+      setRfNodes(prev => {
+        prev.forEach(n => {
+          if (dragState.current.descendants.has(n.id)) {
+            pinnedPositions.current.set(parseInt(n.id), {
+              x: n.position.x + CX,
+              y: n.position.y + CY,
+            });
+          }
+        });
+        return prev; // read-only scan, no state change
+      });
+    }
+    dragState.current = null;
+  }, [setRfNodes]);
 
   const handleClassify = async (field, value) => {
     if (!selectedId) return;
@@ -387,7 +486,7 @@ function InfraMap() {
       if (field === 'device_type') data.device_type = value || null;
       if (field === 'parent_host_id') data.parent_host_id = value ? parseInt(value) : null;
       await api.classifyHost(selectedId, data);
-      await fetchData(true);
+      await fetchData(true, selectedId);
     } catch (err) {
       console.error('Classify failed:', err);
     }
@@ -418,7 +517,9 @@ function InfraMap() {
               let polls = 0;
               const poll = setInterval(async () => {
                 polls++;
-                try { await fetchData(true); } catch {}
+                try {
+                  setSelectedId(id => { fetchData(true, id); return id; });
+                } catch {}
                 if (polls >= 8) { clearInterval(poll); setDiscovering(false); }
               }, 5000);
             } catch (err) {
@@ -455,17 +556,18 @@ function InfraMap() {
             onEdgesChange={onEdgesChange}
             onNodeClick={onNodeClick}
             onPaneClick={onPaneClick}
+            onNodeDragStart={onNodeDragStart}
+            onNodeDrag={onNodeDrag}
             onNodeDragStop={onNodeDragStop}
             nodeTypes={nodeTypes}
             nodesConnectable={false}
             edgesReconnectable={false}
             colorMode="dark"
-            fitView
-            fitViewOptions={{ padding: 0.15 }}
             minZoom={0.05}
             maxZoom={4}
             deleteKeyCode={null}
           >
+            <FitViewOnLoad loaded={nodesLoaded} />
             <Background
               color="var(--border)"
               variant={BackgroundVariant.Dots}
@@ -662,7 +764,7 @@ function InfraMap() {
                             token_id: selected.proxmox_api_token_id,
                             token_secret: selected.proxmox_api_token_secret,
                           });
-                          await fetchData(true);
+                          await fetchData(true, selectedId);
                         } catch (err) { alert('Fehler: ' + err.message); }
                       }
                     }}
@@ -683,7 +785,7 @@ function InfraMap() {
                             token_id: e.target.value || null,
                             token_secret: selected.proxmox_api_token_secret,
                           });
-                          await fetchData(true);
+                          await fetchData(true, selectedId);
                         } catch (err) { alert('Fehler: ' + err.message); }
                       }
                     }}
@@ -704,7 +806,7 @@ function InfraMap() {
                             token_id: selected.proxmox_api_token_id,
                             token_secret: e.target.value || null,
                           });
-                          await fetchData(true);
+                          await fetchData(true, selectedId);
                         } catch (err) { alert('Fehler: ' + err.message); }
                       }
                     }}
@@ -758,7 +860,7 @@ function InfraMap() {
                             fritzbox_username: selected.fritzbox_username,
                             fritzbox_password: selected.fritzbox_password,
                           });
-                          await fetchData(true);
+                          await fetchData(true, selectedId);
                         } catch (err) { alert('Fehler: ' + err.message); }
                       }
                     }}
@@ -779,7 +881,7 @@ function InfraMap() {
                             fritzbox_username: e.target.value || null,
                             fritzbox_password: selected.fritzbox_password,
                           });
-                          await fetchData(true);
+                          await fetchData(true, selectedId);
                         } catch (err) { alert('Fehler: ' + err.message); }
                       }
                     }}
@@ -800,7 +902,7 @@ function InfraMap() {
                             fritzbox_username: selected.fritzbox_username,
                             fritzbox_password: e.target.value || null,
                           });
-                          await fetchData(true);
+                          await fetchData(true, selectedId);
                         } catch (err) { alert('Fehler: ' + err.message); }
                       }
                     }}
